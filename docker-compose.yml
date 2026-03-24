@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: calories
+      POSTGRES_PASSWORD: calories
+      POSTGRES_DB: calories_bot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calories -d calories_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://calories:calories@db:5432/calories_bot
+      DATABASE_URL_SYNC: postgresql+psycopg2://calories:calories@db:5432/calories_bot
+    ports:
+      - "${APP_PORT:-8000}:8000"
+
+volumes:
+  postgres_data:

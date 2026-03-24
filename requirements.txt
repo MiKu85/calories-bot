@@ -1,0 +1,28 @@
+# Telegram bot
+aiogram==3.13.1
+
+# Web framework (for webhooks / health check)
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.0
+asyncpg==0.30.0        # async PostgreSQL driver
+psycopg2-binary==2.9.10  # sync driver for Alembic CLI
+
+# Config
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# AI integrations
+openai==1.57.0          # OpenAI-compatible: GPT-4o vision + Whisper STT
+httpx==0.28.0           # async HTTP client
+
+# Utils
+structlog==24.4.0       # structured logging
+tenacity==9.0.0         # retry logic
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0

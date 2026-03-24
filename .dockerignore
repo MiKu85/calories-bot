@@ -1,0 +1,13 @@
+.env
+.env.local
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.log
+.DS_Store
+docs/
+tmp_photos/
