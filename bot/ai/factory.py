@@ -24,7 +24,10 @@ from config import settings
 
 @lru_cache(maxsize=1)
 def _openai_client() -> AsyncOpenAI:
-    return AsyncOpenAI(api_key=settings.openai_api_key)
+    return AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+    )
 
 
 def get_text_provider() -> TextProvider:
