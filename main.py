@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
@@ -8,8 +9,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from fastapi import FastAPI
+from aiogram.types import Update
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 
 from bot.db.session import AsyncSessionLocal
 from bot.handlers.admin import router as admin_router
@@ -80,29 +82,31 @@ async def run_polling() -> None:
 # ── Webhook mode (production) ──────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Calories Bot", docs_url=None, redoc_url=None)
     bot = create_bot()
     dp = create_dispatcher()
 
-    @app.on_event("startup")
-    async def on_startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         webhook_url = f"{settings.webhook_url}{settings.webhook_path}"
         await bot.set_webhook(webhook_url)
         asyncio.create_task(feedback_scheduler_loop(bot, AsyncSessionLocal))
         logger.info("webhook_set", url=webhook_url)
-
-    @app.on_event("shutdown")
-    async def on_shutdown() -> None:
+        yield
         await bot.delete_webhook()
         await bot.session.close()
         logger.info("bot_shutdown")
+
+    app = FastAPI(title="Calories Bot", docs_url=None, redoc_url=None, lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok"}
 
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=settings.webhook_path)
-    setup_application(app, dp, bot=bot)
+    @app.post(settings.webhook_path)
+    async def webhook_handler(request: Request) -> Response:
+        update = Update.model_validate(await request.json(), context={"bot": bot})
+        await dp.feed_update(bot, update)
+        return Response(status_code=200)
 
     return app
 
