@@ -119,7 +119,7 @@ async def _send_ask_weight(message: Message) -> None:
 
 async def _send_ask_activity(message: Message) -> None:
     await message.answer(
-        "Какой у тебя уровень физической активности?",
+        "Как часто ты занимаешься спортом (кардио, силовые)?",
         reply_markup=activity_kb(),
     )
 
