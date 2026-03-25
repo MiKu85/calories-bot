@@ -28,6 +28,7 @@ from bot.keyboards.onboarding import (
     remove_kb,
     sex_kb,
 )
+from bot.services.target_calculator import calculate_bmr
 from bot.services.user_service import apply_targets
 
 logger = structlog.get_logger(__name__)
@@ -281,6 +282,7 @@ async def process_goal(
         "gain": "набрать мышечную массу",
     }[value]
 
+    bmr = int(calculate_bmr(user.sex, user.weight_kg, user.height_cm, user.age))
     kcal = int(targets.daily_calories)
     prot = targets.daily_protein_g
     fat = targets.daily_fat_g
@@ -292,8 +294,10 @@ async def process_goal(
 
     await callback.message.answer(
         f"Обязательно помогу тебе правильно питаться и чувствовать себя лучше с каждым днём.\n\n"
-        f"Чтобы <b>{goal_label}</b>, рекомендую тебе есть около <b>{kcal} ккал/день</b> — "
-        f"твоя потребность в калориях согласно твоим показателям.\n\n"
+        f"Твой базовый расход калорий в день составляет <b>{bmr} ккал</b>. "
+        f"Расчёт выполнен по формуле Миффлина — Сен-Жеора, "
+        f"исследователей Школы медицины Университета Невады.\n\n"
+        f"Чтобы <b>{goal_label}</b>, с учётом твоей активности рекомендую есть около <b>{kcal} ккал/день</b>.\n\n"
         f"<b>Распределение макронутриентов при {kcal} ккал/день:</b>\n\n"
         f"• Углеводы: примерно <b>{int(carbs)} г</b> ({carbs_pct}% от общего количества калорий)\n"
         f"• Белки: примерно <b>{int(prot)} г</b> ({prot_pct}% от общего количества калорий)\n"
