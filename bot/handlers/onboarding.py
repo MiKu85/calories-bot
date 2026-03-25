@@ -64,6 +64,11 @@ _DB_TO_FSM: dict[OnboardingState, State] = {
 
 async def resume_onboarding(message: Message, user: User, state: FSMContext) -> None:
     """Restore aiogram FSM state from DB and re-ask the current question."""
+    # awaiting_workouts was removed — treat it as awaiting_goal
+    if user.onboarding_state == OnboardingState.awaiting_workouts:
+        user.onboarding_state = OnboardingState.awaiting_goal
+        # db.flush() will happen via middleware commit
+
     fsm_state = _DB_TO_FSM.get(user.onboarding_state)
     if fsm_state:
         await state.set_state(fsm_state)
