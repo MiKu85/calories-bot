@@ -48,7 +48,7 @@ class MealStates(StatesGroup):
 
 class OnboardingCompleted:
     """Passes through only when user has completed onboarding and has targets set."""
-    async def __call__(self, message: Message, user: User) -> bool:
+    def __call__(self, message: Message, user: User) -> bool:
         return (
             user.onboarding_state == OnboardingState.completed
             and user.targets_set
