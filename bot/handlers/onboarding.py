@@ -303,17 +303,31 @@ async def process_goal(
     targets = await apply_targets(user, db)
     await state.clear()
 
-    goal_label = {"lose": "похудеть", "maintain": "поддерживать вес", "gain": "набрать массу"}[value]
-    name = user.preferred_name or "друг"
+    goal_label = {
+        "lose": "похудеть",
+        "maintain": "поддерживать текущий вес",
+        "gain": "набрать мышечную массу",
+    }[value]
+
+    kcal = int(targets.daily_calories)
+    prot = targets.daily_protein_g
+    fat = targets.daily_fat_g
+    carbs = targets.daily_carbs_g
+
+    prot_pct = round(prot * 4 / kcal * 100) if kcal else 0
+    fat_pct = round(fat * 9 / kcal * 100) if kcal else 0
+    carbs_pct = 100 - prot_pct - fat_pct
 
     await callback.message.answer(
-        f"Отлично, {name}! Профиль заполнен.\n\n"
-        f"<b>Твои цели на день:</b>\n"
-        f"Калории: <b>{int(targets.daily_calories)}</b> ккал\n"
-        f"Белки: <b>{targets.daily_protein_g}</b> г\n"
-        f"Жиры: <b>{targets.daily_fat_g}</b> г\n"
-        f"Углеводы: <b>{targets.daily_carbs_g}</b> г\n\n"
-        f"Цель: {goal_label}.\n\n"
+        f"Обязательно помогу тебе правильно питаться и чувствовать себя лучше с каждым днём! "
+        f"Чтобы <b>{goal_label}</b>, рекомендую тебе есть около <b>{kcal} ккал/день</b> — "
+        f"это как раз твоя суточная потребность в энергии.\n\n"
+        f"<b>Распределение макронутриентов при {kcal} ккал/день:</b>\n\n"
+        f"• Углеводы: примерно <b>{int(carbs)} г</b> ({carbs_pct}% от общего количества калорий)\n"
+        f"• Белки: примерно <b>{int(prot)} г</b> ({prot_pct}% от общего количества калорий)\n"
+        f"• Жиры: примерно <b>{int(fat)} г</b> ({fat_pct}% от общего количества калорий)\n\n"
+        f"Постараемся вместе сделать твоё питание более разнообразным и сбалансированным! "
+        f"Помни, что небольшие изменения каждый день дают большой эффект на дистанции.\n\n"
         f"Теперь просто пиши, что ел(а), — текстом, голосом или фото. Я всё посчитаю!"
     )
 
