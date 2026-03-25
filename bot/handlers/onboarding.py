@@ -27,7 +27,6 @@ from bot.keyboards.onboarding import (
     goal_kb,
     remove_kb,
     sex_kb,
-    workouts_kb,
 )
 from bot.services.user_service import apply_targets
 
@@ -76,7 +75,6 @@ async def resume_onboarding(message: Message, user: User, state: FSMContext) -> 
         OnboardingState.awaiting_height: _send_ask_height,
         OnboardingState.awaiting_weight: _send_ask_weight,
         OnboardingState.awaiting_activity: _send_ask_activity,
-        OnboardingState.awaiting_workouts: _send_ask_workouts,
         OnboardingState.awaiting_goal: _send_ask_goal,
     }.get(user.onboarding_state)
 
@@ -121,14 +119,6 @@ async def _send_ask_activity(message: Message) -> None:
     await message.answer(
         "Как часто ты занимаешься спортом (кардио, силовые)?",
         reply_markup=activity_kb(),
-    )
-
-
-async def _send_ask_workouts(message: Message) -> None:
-    await message.answer(
-        "Сколько раз в неделю ты тренируешься?\n"
-        "(можно пропустить, если уже указал активность выше)",
-        reply_markup=workouts_kb(),
     )
 
 
@@ -251,10 +241,10 @@ async def process_activity(
         "very_active": ActivityLevel.very_active,
     }
     user.activity_level = activity_map[value]
-    user.onboarding_state = OnboardingState.awaiting_workouts
+    user.onboarding_state = OnboardingState.awaiting_goal
     await db.flush()
-    await state.set_state(OnboardingStates.awaiting_workouts)
-    await _send_ask_workouts(callback.message)
+    await state.set_state(OnboardingStates.awaiting_goal)
+    await _send_ask_goal(callback.message)
 
 
 @router.message(OnboardingStates.awaiting_activity)
@@ -262,30 +252,7 @@ async def process_activity_text(message: Message) -> None:
     await message.answer("Выбери уровень активности кнопкой выше.", reply_markup=activity_kb())
 
 
-# ── Step 7: Workouts (skippable) ───────────────────────────────────────────────
-
-@router.callback_query(OnboardingStates.awaiting_workouts, F.data.startswith("workouts:"))
-async def process_workouts(
-    callback: CallbackQuery, state: FSMContext, user: User, db: AsyncSession
-) -> None:
-    await callback.answer()
-    value = callback.data.split(":")[1]
-
-    if value != "skip":
-        user.workouts_per_week = int(value)
-
-    user.onboarding_state = OnboardingState.awaiting_goal
-    await db.flush()
-    await state.set_state(OnboardingStates.awaiting_goal)
-    await _send_ask_goal(callback.message)
-
-
-@router.message(OnboardingStates.awaiting_workouts)
-async def process_workouts_text(message: Message) -> None:
-    await message.answer("Выбери количество тренировок кнопкой или нажми «Пропустить».", reply_markup=workouts_kb())
-
-
-# ── Step 8: Goal → complete onboarding ────────────────────────────────────────
+# ── Step 7: Goal → complete onboarding ────────────────────────────────────────
 
 @router.callback_query(OnboardingStates.awaiting_goal, F.data.startswith("goal:"))
 async def process_goal(
