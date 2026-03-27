@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Update
+from aiogram.types import BotCommand, MenuButtonCommands, Update
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
@@ -29,11 +29,27 @@ from bot.handlers.voice import router as voice_router
 from bot.middleware.db import DbSessionMiddleware
 from bot.middleware.user import UserMiddleware
 from bot.tasks.feedback_scheduler import feedback_scheduler_loop
+from bot.tasks.morning_scheduler import morning_scheduler_loop
 from bot.utils.logging import configure_logging
 from config import settings
 
 configure_logging(log_level=settings.log_level, production=settings.is_production)
 logger = structlog.get_logger(__name__)
+
+
+# ── Bot commands menu ──────────────────────────────────────────────────────────
+
+_BOT_COMMANDS = [
+    BotCommand(command="stats",   description="Статистика за сегодня"),
+    BotCommand(command="profile", description="Мой профиль и цели"),
+    BotCommand(command="help",    description="Помощь"),
+    BotCommand(command="start",   description="Перезапустить бота"),
+]
+
+
+async def _set_commands(bot: Bot) -> None:
+    await bot.set_my_commands(_BOT_COMMANDS)
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
 # ── Bot / Dispatcher factory ───────────────────────────────────────────────────
@@ -74,7 +90,9 @@ def create_dispatcher() -> Dispatcher:
 async def run_polling() -> None:
     bot = create_bot()
     dp = create_dispatcher()
+    await _set_commands(bot)
     asyncio.create_task(feedback_scheduler_loop(bot, AsyncSessionLocal))
+    asyncio.create_task(morning_scheduler_loop(bot, AsyncSessionLocal))
     logger.info("bot_starting", mode="polling")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
@@ -89,7 +107,9 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         webhook_url = f"{settings.webhook_url}{settings.webhook_path}"
         await bot.set_webhook(webhook_url)
+        await _set_commands(bot)
         asyncio.create_task(feedback_scheduler_loop(bot, AsyncSessionLocal))
+        asyncio.create_task(morning_scheduler_loop(bot, AsyncSessionLocal))
         logger.info("webhook_set", url=webhook_url)
         yield
         await bot.delete_webhook()

@@ -114,6 +114,10 @@ class User(Base):
     first_meal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     feedback_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Morning summary
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Moscow", nullable=False, server_default="Europe/Moscow")
+    morning_sent_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
