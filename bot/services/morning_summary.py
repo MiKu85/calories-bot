@@ -209,14 +209,20 @@ def build_morning_summary(
         opening = random.choice(_OPENING_NEUTRAL)
 
     # Stats block
-    kcal_pct = int(yesterday.calories / targets.calories * 100) if targets.calories > 0 else 0
-    stats_line = (
-        f"Вчера: <b>{int(yesterday.calories)}</b> ккал из {int(targets.calories)} ({kcal_pct}%)"
-    )
-    macro_line = (
-        f"Б {int(yesterday.protein_g)}г · "
-        f"Ж {int(yesterday.fat_g)}г · "
-        f"У {int(yesterday.carbs_g)}г"
+    def _pct(val: float, target: float) -> int:
+        return int(val / target * 100) if target > 0 else 0
+
+    kcal_pct = _pct(yesterday.calories, targets.calories)
+    prot_pct = _pct(yesterday.protein_g, targets.protein_g)
+    fat_pct = _pct(yesterday.fat_g, targets.fat_g)
+    carbs_pct = _pct(yesterday.carbs_g, targets.carbs_g)
+
+    stats_block = (
+        f"Вчера\n"
+        f"<b>{int(yesterday.calories)}</b> ккал из {int(targets.calories)} рекомендованных ({kcal_pct}%)\n"
+        f"{int(yesterday.protein_g)}г белки, норма {int(targets.protein_g)}г ({prot_pct}%)\n"
+        f"{int(yesterday.fat_g)}г жиры, норма {int(targets.fat_g)}г ({fat_pct}%)\n"
+        f"{int(yesterday.carbs_g)}г углеводы, норма {int(targets.carbs_g)}г ({carbs_pct}%)"
     )
 
     # Trend (only if day_before has real data)
@@ -230,11 +236,11 @@ def build_morning_summary(
     rec = ""
     for signal, text in _REC_PRIORITY:
         if signal in signals:
-            rec = text
+            rec = f"Моя рекомендация: {text}"
             break
 
     # Assemble sections separated by blank lines
-    sections = [opening, f"{stats_line}\n{macro_line}"]
+    sections = [opening, stats_block]
     if trend_line:
         sections.append(trend_line)
     if rec:
