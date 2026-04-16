@@ -41,7 +41,8 @@ from bot.ai import get_patch_provider, get_text_provider
 from bot.ai.openai_patch import items_to_patch_input, patch_result_to_items
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
 from bot.db.models import MealInputType, OnboardingState, User
-from bot.keyboards.meal import meal_result_kb
+from bot.keyboards.meal import meal_detail_kb, meal_result_kb
+from bot.services.meal_rating import build_short_rating
 from bot.services.meal_service import (
     MealSpec,
     confirm_meal,
@@ -54,6 +55,7 @@ from bot.services.meal_service import (
     update_meal,
 )
 from bot.services.stats_service import format_meal_result, format_stats
+from bot.services.tip_service import maybe_get_tip
 from config import settings
 
 logger = structlog.get_logger(__name__)
@@ -234,8 +236,16 @@ async def handle_text_meal(
 ) -> None:
     await state.clear()
 
+    text = message.text.strip()
+
+    # Check for retro date markers (вчера / позавчера) — redirect if found
+    from bot.handlers.retro import maybe_redirect_to_retro
+    redirected = await maybe_redirect_to_retro(message, text, user, state)
+    if redirected:
+        return
+
     from bot.services.debounce_service import BufferedMessage, meal_debounce_service
-    msg = BufferedMessage(kind="text", text=message.text.strip())
+    msg = BufferedMessage(kind="text", text=text)
     await meal_debounce_service.add_message(
         telegram_id=user.telegram_id,
         chat_id=message.chat.id,
@@ -505,14 +515,120 @@ async def handle_patch_non_text(message: Message) -> None:
 async def meal_confirm_callback(
     callback: CallbackQuery, user: User, db: AsyncSession
 ) -> None:
-    await callback.answer("Записано!")
+    await callback.answer("Записано ✅")
     meal_id = int(callback.data.split(":")[1])
     meal = await get_meal_by_id(meal_id, db)
 
-    if meal and meal.user_id == user.id and not meal.is_deleted:
-        await confirm_meal(meal, db)
+    if not (meal and meal.user_id == user.id and not meal.is_deleted):
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
 
+    await confirm_meal(meal, db)
+
+    # Build rating block (rule-based, instant)
+    agg = await get_today_aggregate(user.id, db)
+    rating = build_short_rating(
+        meal_calories=meal.calories,
+        meal_protein=meal.protein_g,
+        meal_fat=meal.fat_g,
+        meal_carbs=meal.carbs_g,
+        agg=agg,
+        user=user,
+    )
+
+    # Maybe get a periodic tip (increments counter, no extra LLM call)
+    tip = await maybe_get_tip(user, db)
+
+    if rating or tip:
+        # Append rating + tip to the original message
+        extra_parts: list[str] = []
+        if rating:
+            extra_parts.append(rating)
+        if tip:
+            # Show tip as-is with its category emoji (e.g. "💧 Стакан воды...")
+            extra_parts.append(tip)
+
+        suffix = "\n\n" + "\n\n".join(extra_parts)
+        try:
+            current_text = callback.message.text or callback.message.caption or ""
+            new_text = current_text + suffix
+            kb = meal_detail_kb(meal_id) if rating else None
+            await callback.message.edit_text(new_text, reply_markup=kb)
+        except Exception:
+            # If edit fails (e.g. message too old or unchanged), just remove keyboard
+            await callback.message.edit_reply_markup(reply_markup=None)
+    else:
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+
+# ── 🎯 Detailed meal assessment (LLM nutritionist) ────────────────────────────
+
+@router.callback_query(F.data.startswith("meal_detail:"))
+async def meal_detail_callback(
+    callback: CallbackQuery, user: User, db: AsyncSession
+) -> None:
+    """Generate and send a full nutritionist assessment for a confirmed meal."""
+    await callback.answer()
+    meal_id = int(callback.data.split(":")[1])
+    meal = await get_meal_by_id(meal_id, db)
+
+    if not (meal and meal.user_id == user.id):
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    # Remove "🎯 Подробнее" button while loading
     await callback.message.edit_reply_markup(reply_markup=None)
+
+    agg = await get_today_aggregate(user.id, db)
+
+    # Build context string for LLM
+    items_lines: list[str] = []
+    for it in meal.meal_items or []:
+        items_lines.append(
+            f"- {it.get('name')} ({it.get('portion_description')}): "
+            f"{int(it.get('calories', 0))} ккал, "
+            f"Б {it.get('protein_g', 0):.0f}г, "
+            f"Ж {it.get('fat_g', 0):.0f}г, "
+            f"У {it.get('carbs_g', 0):.0f}г"
+        )
+    items_text = "\n".join(items_lines) if items_lines else f"Итого: {int(meal.calories)} ккал"
+
+    user_context = (
+        f"Приём пищи:\n{items_text}\n\n"
+        f"Итого приёма: {int(meal.calories)} ккал, "
+        f"Б {meal.protein_g:.0f}г, Ж {meal.fat_g:.0f}г, У {meal.carbs_g:.0f}г\n\n"
+        f"Дневной итог после этого приёма: {int(agg.total_calories)} ккал, "
+        f"Б {agg.total_protein_g:.0f}г, Ж {agg.total_fat_g:.0f}г, У {agg.total_carbs_g:.0f}г\n\n"
+        f"Цели пользователя: {int(user.daily_calories_target or 0)} ккал, "
+        f"Б {user.daily_protein_g_target or 0:.0f}г, "
+        f"Ж {user.daily_fat_g_target or 0:.0f}г, "
+        f"У {user.daily_carbs_g_target or 0:.0f}г"
+    )
+
+    try:
+        from pathlib import Path
+        prompt_path = Path(__file__).parent.parent / "prompts" / "meal_rating_detail.txt"
+        system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+
+        from bot.ai.factory import _openai_client
+        from config import settings
+        client = _openai_client()
+        response = await client.chat.completions.create(
+            model=settings.text_model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_context},
+            ],
+            temperature=0.3,
+            max_tokens=512,
+        )
+        detail_text = response.choices[0].message.content.strip()
+        await callback.message.answer(f"📊 Оценка приёма пищи\n\n{detail_text}")
+    except Exception as exc:
+        logger.error("meal_detail_failed", error=str(exc), meal_id=meal_id)
+        await callback.message.answer(
+            "Не удалось получить подробную оценку — попробуй позже."
+        )
 
 
 # ── ✏️ Patch (delta update) ───────────────────────────────────────────────────

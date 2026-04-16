@@ -122,6 +122,12 @@ class User(Base):
     last_active_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     inactivity_reminder_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
 
+    # Engagement: periodic tips
+    # tips_meal_counter: increments each confirmed meal, resets to 0 when a tip is shown
+    tips_meal_counter: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    # tip_history: list of {"tip_id": int, "shown_at": "YYYY-MM-DD"} — used for 14-day dedup
+    tip_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

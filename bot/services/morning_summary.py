@@ -177,6 +177,7 @@ def build_morning_summary(
     yesterday: DayData,
     targets: UserTargets,
     day_before: DayData | None = None,
+    tip: str | None = None,
 ) -> str:
     """
     Build the morning summary message as an HTML-formatted string.
@@ -186,15 +187,20 @@ def build_morning_summary(
         yesterday:  Nutrition data for the day being summarised.
         targets:    User's daily nutrition targets.
         day_before: Optional data from two days ago for trend analysis.
+        tip:        Optional tip string to append as 💡 Совет дня.
 
     Returns:
         HTML string ready to send via bot.send_message().
     """
-    greeting = f"Доброе утро, {name}!\n\n" if name else "Доброе утро!\n\n"
+    greeting = f"☀️ Доброе утро, {name}!\n\n" if name else "☀️ Доброе утро!\n\n"
 
     # Fallback: nothing meaningful logged
     if yesterday.calories < 300 or yesterday.meals_count == 0:
-        return greeting + _FALLBACK_NO_DATA
+        fallback = greeting + _FALLBACK_NO_DATA
+        if tip:
+            _, _, tip_body = tip.partition(" ")
+            fallback += f"\n\n💡 {tip_body or tip}"
+        return fallback
 
     signals = detect_signals(yesterday, targets)
 
@@ -245,6 +251,10 @@ def build_morning_summary(
         sections.append(trend_line)
     if rec:
         sections.append(rec)
-    sections.append("Удачного дня!")
+    if tip:
+        # Strip category emoji — morning summary uses 💡 as the section marker instead
+        _, _, tip_body = tip.partition(" ")
+        sections.append(f"💡 {tip_body or tip}")
+    sections.append("Удачного дня! 💪")
 
     return greeting + "\n\n".join(sections)

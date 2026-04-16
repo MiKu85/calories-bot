@@ -59,6 +59,17 @@ def meal_result_kb(
     return builder.as_markup()
 
 
+def meal_detail_kb(meal_id: int) -> InlineKeyboardMarkup:
+    """
+    Keyboard shown after confirmation (rating block visible).
+    Only "🎯 Подробнее" remains — for the full nutritionist assessment.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎯 Подробнее", callback_data=f"meal_detail:{meal_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def duplicate_check_kb(new_meal_id: int) -> InlineKeyboardMarkup:
     """
     Keyboard shown when a possible duplicate meal is detected.
@@ -66,7 +77,7 @@ def duplicate_check_kb(new_meal_id: int) -> InlineKeyboardMarkup:
     new_meal_id: id of the just-saved meal that might be a duplicate.
     """
     builder = InlineKeyboardBuilder()
-    builder.button(text="Новый приём ✓", callback_data=f"dedup_ok:{new_meal_id}")
-    builder.button(text="Повтор — удалить", callback_data=f"dedup_delete:{new_meal_id}")
+    builder.button(text="✅ Новый приём", callback_data=f"dedup_ok:{new_meal_id}")
+    builder.button(text="Это повтор — удалить", callback_data=f"dedup_delete:{new_meal_id}")
     builder.adjust(2)
     return builder.as_markup()
