@@ -45,7 +45,7 @@ logger = structlog.get_logger(__name__)
 _BOT_COMMANDS = [
     BotCommand(command="stats",   description="Статистика за сегодня"),
     BotCommand(command="export",  description="Выгрузить дневник за неделю"),
-    BotCommand(command="вчера",   description="Записать приём за вчера или позавчера"),
+    BotCommand(command="retro",   description="Записать приём за вчера или позавчера"),
     BotCommand(command="profile", description="Мой профиль и цели"),
     BotCommand(command="help",    description="Помощь"),
     BotCommand(command="start",   description="Перезапустить бота"),

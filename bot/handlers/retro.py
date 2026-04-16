@@ -3,7 +3,7 @@ Retrospective meal input — record meals for yesterday or the day before.
 
 Two entry points:
   1. Date marker in text:  «вчера на ужин была курица» → bot asks for confirmation.
-  2. /вчера command        → bot prompts which day, then accepts meal input.
+  2. /retro command        → bot prompts which day, then accepts meal input.
 
 Constraints:
   - Max lookback: 2 days (yesterday / day-before-yesterday).
@@ -117,7 +117,7 @@ def _retro_choose_kb() -> InlineKeyboardMarkup:
 
 # ── /вчера command ─────────────────────────────────────────────────────────────
 
-@router.message(OnboardingCompleted(), Command("вчера"))
+@router.message(OnboardingCompleted(), Command("retro"))
 async def cmd_retro(message: Message, state: FSMContext) -> None:
     """Let user explicitly choose a retro date before entering a meal."""
     now = datetime.now(timezone.utc)
