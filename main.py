@@ -19,6 +19,7 @@ from bot.handlers.errors import router as errors_router
 from bot.handlers.feedback import router as feedback_router
 from bot.handlers.help import router as help_router
 from bot.handlers.meal import router as meal_router
+from bot.handlers.meal_batch import flush_meal_buffer, router as meal_batch_router
 from bot.handlers.onboarding import router as onboarding_router
 from bot.handlers.photo import router as photo_router
 from bot.handlers.profile import router as profile_router
@@ -28,6 +29,7 @@ from bot.handlers.stats import router as stats_router
 from bot.handlers.voice import router as voice_router
 from bot.middleware.db import DbSessionMiddleware
 from bot.middleware.user import UserMiddleware
+from bot.services.debounce_service import meal_debounce_service
 from bot.tasks.feedback_scheduler import feedback_scheduler_loop
 from bot.tasks.morning_scheduler import morning_scheduler_loop
 from bot.utils.logging import configure_logging
@@ -77,10 +79,11 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(stats_router)
     dp.include_router(help_router)
     dp.include_router(admin_router)
-    dp.include_router(feedback_router)  # before voice/meal: intercepts FSM states
-    dp.include_router(voice_router)     # F.voice — before meal catch-all
-    dp.include_router(photo_router)     # F.photo — before meal catch-all
-    dp.include_router(meal_router)      # last: catches all remaining text
+    dp.include_router(feedback_router)   # before voice/meal: intercepts FSM states
+    dp.include_router(meal_batch_router) # augment/merge callbacks + awaiting_augment state
+    dp.include_router(voice_router)      # F.voice — before meal catch-all
+    dp.include_router(photo_router)      # F.photo — before meal catch-all
+    dp.include_router(meal_router)       # last: catches all remaining text
 
     return dp
 
@@ -90,6 +93,13 @@ def create_dispatcher() -> Dispatcher:
 async def run_polling() -> None:
     bot = create_bot()
     dp = create_dispatcher()
+    meal_debounce_service.init(
+        bot=bot,
+        flush_callback=flush_meal_buffer,
+        debounce_seconds=settings.meal_debounce_seconds,
+        max_total_seconds=settings.meal_debounce_max_total_seconds,
+        max_messages=settings.meal_debounce_max_messages,
+    )
     await _set_commands(bot)
     asyncio.create_task(feedback_scheduler_loop(bot, AsyncSessionLocal))
     asyncio.create_task(morning_scheduler_loop(bot, AsyncSessionLocal))
@@ -105,6 +115,13 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        meal_debounce_service.init(
+            bot=bot,
+            flush_callback=flush_meal_buffer,
+            debounce_seconds=settings.meal_debounce_seconds,
+            max_total_seconds=settings.meal_debounce_max_total_seconds,
+            max_messages=settings.meal_debounce_max_messages,
+        )
         webhook_url = f"{settings.webhook_url}{settings.webhook_path}"
         await bot.set_webhook(webhook_url)
         await _set_commands(bot)

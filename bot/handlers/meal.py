@@ -2,16 +2,30 @@
 Meal input handler — text flow + shared pipeline for voice/photo reuse.
 
 Catches plain text messages from users who have completed onboarding
-and are not in any active FSM state (or are in correction state).
+and are not in any active FSM state (or are in patch/correction state).
 
 Pipeline (shared via run_meal_pipeline / save_and_reply_meal):
   text / transcription
     → TextProvider.analyze_meal(text)
     → needs_clarification? → ask to clarify, stop
     → save_and_reply_meal() → result message + keyboard
-    → [✅ Верно] → confirm meal
-    → [✏️ Исправить] → soft-delete + ask to re-describe
+    → [✅ Верно]      → confirm meal, clear keyboard
+    → [✏️ Исправить] → enter patch mode (delta update, NOT re-describe)
+    → [🔍 Уточнить]  → enter patch mode with clarification hint (photo/low-conf)
     → [📊 Статистика] → show /stats inline
+
+Patch mode (Task 2):
+  awaiting_patch state stores meal_id in FSM data
+    → user sends free-text correction
+    → PatchProvider.patch_meal(current_items, user_message)
+    → understood? → update meal in-place → show updated result
+    → not understood? → ask to rephrase (keep state)
+
+Duplicate detection (Task 5):
+  after saving a new meal, check for another recent meal in the window
+  if found + text similar → show "Это не повтор?" inline question
+  → [Новый приём]    → dismiss, keep both
+  → [Это повтор — удалить] → soft-delete the new meal
 """
 from __future__ import annotations
 
@@ -23,25 +37,46 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.ai import get_text_provider
-from bot.ai.schemas import MealAnalysisResult
+from bot.ai import get_patch_provider, get_text_provider
+from bot.ai.openai_patch import items_to_patch_input, patch_result_to_items
+from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
 from bot.db.models import MealInputType, OnboardingState, User
 from bot.keyboards.meal import meal_result_kb
 from bot.services.meal_service import (
     confirm_meal,
     delete_meal,
     get_meal_by_id,
+    get_recent_meal,
     get_today_aggregate,
     save_meal,
+    update_meal,
 )
 from bot.services.stats_service import format_meal_result, format_stats
+from config import settings
 
 logger = structlog.get_logger(__name__)
 router = Router(name="meal")
 
+# ── FSM states ────────────────────────────────────────────────────────────────
 
 class MealStates(StatesGroup):
-    awaiting_correction = State()
+    awaiting_correction = State()  # legacy: kept so old in-flight states don't break
+    awaiting_patch = State()       # new delta-update mode
+    # awaiting_augment lives in meal_batch.AugmentStates to avoid circular imports
+
+
+# ── Duplicate similarity helper ───────────────────────────────────────────────
+
+def _jaccard(a: str | None, b: str | None) -> float:
+    """Word-level Jaccard similarity between two strings."""
+    if not a or not b:
+        return 0.0
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    union = words_a | words_b
+    if not union:
+        return 0.0
+    return len(words_a & words_b) / len(union)
 
 
 # ── Filter: only users who finished onboarding ────────────────────────────────
@@ -55,7 +90,7 @@ class OnboardingCompleted:
         )
 
 
-# ── Shared: save meal + build reply ───────────────────────────────────────────
+# ── Shared: save meal + build reply + duplicate check ─────────────────────────
 
 async def save_and_reply_meal(
     message: Message,
@@ -95,13 +130,44 @@ async def save_and_reply_meal(
     if disclaimer:
         response = f"<i>{disclaimer}</i>\n\n{response}"
 
-    await message.answer(response, reply_markup=meal_result_kb(meal.id))
+    # Show "Уточнить" button for medium/low confidence or photo meals
+    show_clarify = (
+        result.confidence in (ConfidenceLevel.medium, ConfidenceLevel.low)
+        or input_type == MealInputType.photo
+    )
+    await message.answer(
+        response,
+        reply_markup=meal_result_kb(meal.id, show_clarify=show_clarify, show_augment=True),
+    )
     logger.bind(telegram_id=user.telegram_id).info(
         "meal_saved",
         meal_id=meal.id,
         input_type=input_type.value,
         confidence=result.confidence,
     )
+
+    # ── Duplicate detection ───────────────────────────────────────────────────
+    recent = await get_recent_meal(
+        user_id=user.id,
+        within_minutes=settings.meal_duplicate_window_minutes,
+        exclude_meal_id=meal.id,
+        db=db,
+    )
+    if recent is not None:
+        similarity = _jaccard(raw_input, recent.raw_input)
+        # Trigger if: texts are similar OR both have no raw_input (two photos in quick succession)
+        is_suspicious = (
+            similarity >= settings.meal_duplicate_similarity_threshold
+            or (raw_input is None and recent.raw_input is None)
+        )
+        if is_suspicious:
+            from bot.keyboards.meal import duplicate_check_kb  # avoid circular at module level
+            import datetime as _dt
+            local_time = recent.logged_at.strftime("%H:%M")
+            await message.answer(
+                f"<i>Похоже на приём в {local_time} — это не повтор?</i>",
+                reply_markup=duplicate_check_kb(meal.id),
+            )
 
 
 # ── Shared: text/voice analysis pipeline ──────────────────────────────────────
@@ -152,7 +218,7 @@ async def run_meal_pipeline(
     )
 
 
-# ── Text meal handler ─────────────────────────────────────────────────────────
+# ── Text meal handler (normal + legacy correction state) ──────────────────────
 
 @router.message(
     OnboardingCompleted(),
@@ -163,15 +229,206 @@ async def handle_text_meal(
     message: Message,
     user: User,
     state: FSMContext,
-    db: AsyncSession,
 ) -> None:
     await state.clear()
-    await run_meal_pipeline(
-        message=message,
-        text=message.text.strip(),
-        input_type=MealInputType.text,
+
+    from bot.services.debounce_service import BufferedMessage, meal_debounce_service
+    msg = BufferedMessage(kind="text", text=message.text.strip())
+    await meal_debounce_service.add_message(
+        telegram_id=user.telegram_id,
+        chat_id=message.chat.id,
+        msg=msg,
+    )
+
+
+# ── Patch mode: text correction ───────────────────────────────────────────────
+
+@router.message(
+    OnboardingCompleted(),
+    StateFilter(MealStates.awaiting_patch),
+    F.text,
+)
+async def handle_patch_text(
+    message: Message,
+    user: User,
+    state: FSMContext,
+    db: AsyncSession,
+) -> None:
+    data = await state.get_data()
+    meal_id = data.get("patch_meal_id")
+    if not meal_id:
+        await state.clear()
+        await message.answer("Что-то пошло не так. Попробуй описать приём заново.")
+        return
+
+    meal = await get_meal_by_id(meal_id, db)
+    if meal is None or meal.user_id != user.id or meal.is_deleted:
+        await state.clear()
+        await message.answer("Приём не найден. Опиши его заново.")
+        return
+
+    current_items = items_to_patch_input(meal.meal_items or [])
+    if not current_items:
+        # No structured items to patch — fall back to re-describe.
+        # Soft-delete the original meal first so the daily counter isn't doubled.
+        await delete_meal(meal, db)
+        await state.clear()
+        await run_meal_pipeline(
+            message=message,
+            text=message.text.strip(),
+            input_type=MealInputType.text,
+            user=user,
+            db=db,
+        )
+        return
+
+    log = logger.bind(telegram_id=user.telegram_id, meal_id=meal_id)
+    provider = get_patch_provider()
+    try:
+        patch_result = await provider.patch_meal(
+            current_items=current_items,
+            user_message=message.text.strip(),
+        )
+    except Exception as exc:
+        log.error("meal_patch_failed", error=str(exc))
+        await message.answer("Не смог применить правку — попробуй ещё раз.")
+        return
+
+    if not patch_result.understood:
+        # Keep state, ask for clarification without resetting
+        clarification = patch_result.clarification_prompt or (
+            "Не понял, что именно исправить. Напиши точнее — "
+            "например «сырники не 220, а 150г» или «убери кофе»."
+        )
+        await message.answer(clarification)
+        return
+
+    # Apply patch in-place (always update the original meal)
+    new_items = patch_result_to_items(patch_result.items)
+    totals = {
+        "calories": patch_result.total_calories,
+        "protein_g": patch_result.total_protein_g,
+        "fat_g": patch_result.total_fat_g,
+        "carbs_g": patch_result.total_carbs_g,
+    }
+    await update_meal(meal, new_items, totals, db)
+    log.info("meal_patched", items=len(new_items), split=bool(patch_result.extra_meals))
+
+    await state.clear()
+
+    # ── Split: user asked to break one meal into several ─────────────────────
+    if patch_result.extra_meals:
+        extra_meal_ids: list[int] = []
+        for extra in patch_result.extra_meals:
+            extra_analysis = MealAnalysisResult(
+                items=[
+                    MealItem(
+                        name=it.name,
+                        portion_description=it.portion_description,
+                        calories=it.calories,
+                        protein_g=it.protein_g,
+                        fat_g=it.fat_g,
+                        carbs_g=it.carbs_g,
+                    )
+                    for it in extra.items
+                ],
+                total_calories=extra.total_calories,
+                total_protein_g=extra.total_protein_g,
+                total_fat_g=extra.total_fat_g,
+                total_carbs_g=extra.total_carbs_g,
+                confidence=ConfidenceLevel.medium,
+            )
+            new_meal = await save_meal(
+                user=user,
+                input_type=meal.input_type,
+                raw_input=meal.raw_input,
+                result=extra_analysis,
+                db=db,
+            )
+            # Preserve the original meal's timestamp so all parts land in the
+            # same "meal event" slot when the user reviews their history.
+            new_meal.logged_at = meal.logged_at
+            await db.flush()
+            extra_meal_ids.append(new_meal.id)
+
+        split_count = 1 + len(extra_meal_ids)
+        await message.answer(
+            f"Разделил на {split_count} приёма — вот они:"
+        )
+
+        # Show first (updated) meal
+        agg = await get_today_aggregate(user.id, db)
+        first_response = format_meal_result(
+            meal_calories=patch_result.total_calories,
+            meal_protein=patch_result.total_protein_g,
+            meal_fat=patch_result.total_fat_g,
+            meal_carbs=patch_result.total_carbs_g,
+            meal_items=new_items,
+            agg=agg,
+            user=user,
+        )
+        await message.answer(
+            f"<b>Приём 1:</b>\n\n{first_response}",
+            reply_markup=meal_result_kb(meal.id, show_clarify=False, show_augment=False),
+        )
+
+        # Show each extra meal
+        for idx, (extra, extra_id) in enumerate(
+            zip(patch_result.extra_meals, extra_meal_ids), start=2
+        ):
+            extra_items_dict = [
+                {
+                    "name": it.name,
+                    "portion_description": it.portion_description,
+                    "calories": it.calories,
+                    "protein_g": it.protein_g,
+                    "fat_g": it.fat_g,
+                    "carbs_g": it.carbs_g,
+                }
+                for it in extra.items
+            ]
+            agg = await get_today_aggregate(user.id, db)
+            extra_response = format_meal_result(
+                meal_calories=extra.total_calories,
+                meal_protein=extra.total_protein_g,
+                meal_fat=extra.total_fat_g,
+                meal_carbs=extra.total_carbs_g,
+                meal_items=extra_items_dict,
+                agg=agg,
+                user=user,
+            )
+            await message.answer(
+                f"<b>Приём {idx}:</b>\n\n{extra_response}",
+                reply_markup=meal_result_kb(extra_id, show_clarify=False, show_augment=False),
+            )
+        return
+
+    # ── Regular patch: single meal updated in-place ───────────────────────────
+    agg = await get_today_aggregate(user.id, db)
+    response = format_meal_result(
+        meal_calories=patch_result.total_calories,
+        meal_protein=patch_result.total_protein_g,
+        meal_fat=patch_result.total_fat_g,
+        meal_carbs=patch_result.total_carbs_g,
+        meal_items=new_items,
+        agg=agg,
         user=user,
-        db=db,
+    )
+    await message.answer(
+        f"Исправил!\n\n{response}",
+        reply_markup=meal_result_kb(meal.id, show_clarify=False),
+    )
+
+
+# ── Patch mode: non-text message guard ────────────────────────────────────────
+
+@router.message(StateFilter(MealStates.awaiting_patch))
+async def handle_patch_non_text(message: Message) -> None:
+    """Remind user that patch mode only accepts text."""
+    await message.answer(
+        "В режиме исправления напиши текстом, что именно изменить — "
+        "например «убери кофе» или «сырники не 220, а 150г».\n\n"
+        "Или нажми /cancel для отмены."
     )
 
 
@@ -191,26 +448,47 @@ async def meal_confirm_callback(
     await callback.message.edit_reply_markup(reply_markup=None)
 
 
-# ── ✏️ Correct ────────────────────────────────────────────────────────────────
+# ── ✏️ Patch (delta update) ───────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("meal_fix:"))
 async def meal_fix_callback(
     callback: CallbackQuery,
     user: User,
     state: FSMContext,
-    db: AsyncSession,
 ) -> None:
     await callback.answer()
     meal_id = int(callback.data.split(":")[1])
-    meal = await get_meal_by_id(meal_id, db)
 
-    if meal and meal.user_id == user.id and not meal.is_deleted:
-        await delete_meal(meal, db)
-
+    await state.set_state(MealStates.awaiting_patch)
+    await state.update_data(patch_meal_id=meal_id)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await state.set_state(MealStates.awaiting_correction)
     await callback.message.answer(
-        "Опиши приём пищи заново — текстом или голосом, и я пересчитаю."
+        "Что именно исправить? Напиши свободным текстом — "
+        "например «сырники не 220, а 150г», «убери кофе» или «добавь ложку сметаны».\n\n"
+        "/cancel — отменить."
+    )
+
+
+# ── 🔍 Уточнить (soft clarification, same patch mode) ─────────────────────────
+
+@router.callback_query(F.data.startswith("meal_clarify:"))
+async def meal_clarify_callback(
+    callback: CallbackQuery,
+    user: User,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+    meal_id = int(callback.data.split(":")[1])
+
+    await state.set_state(MealStates.awaiting_patch)
+    await state.update_data(patch_meal_id=meal_id)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        "Хочешь уточнить? Напиши — например:\n"
+        "· «блюдо было большое, граммов 300»\n"
+        "· «там был соус, примерно столовая ложка»\n"
+        "· «готовила на сковороде с маслом»\n\n"
+        "/cancel — отменить."
     )
 
 
@@ -223,6 +501,28 @@ async def meal_stats_callback(
     await callback.answer()
     agg = await get_today_aggregate(user.id, db)
     await callback.message.answer(format_stats(agg, user))
+
+
+# ── Duplicate detection callbacks ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("dedup_ok:"))
+async def dedup_ok_callback(callback: CallbackQuery) -> None:
+    """User confirmed it's a new (separate) meal — do nothing, just dismiss."""
+    await callback.answer("Ок, оставил как новый приём.")
+    await callback.message.delete()
+
+
+@router.callback_query(F.data.startswith("dedup_delete:"))
+async def dedup_delete_callback(
+    callback: CallbackQuery, user: User, db: AsyncSession
+) -> None:
+    """User says it was a duplicate — soft-delete the newer meal."""
+    await callback.answer("Удалил повторный приём.")
+    meal_id = int(callback.data.split(":")[1])
+    meal = await get_meal_by_id(meal_id, db)
+    if meal and meal.user_id == user.id and not meal.is_deleted:
+        await delete_meal(meal, db)
+    await callback.message.delete()
 
 
 # ── Onboarding not complete guard ─────────────────────────────────────────────

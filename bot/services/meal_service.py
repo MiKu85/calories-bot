@@ -1,12 +1,12 @@
 """
-Meal service — save, soft-delete, and daily aggregate management.
+Meal service — save, soft-delete, patch, and daily aggregate management.
 
 Daily aggregate is always recalculated from raw meal rows (no drift risk).
 All aggregate operations use UTC date.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from datetime import date as date_type
 
 from sqlalchemy import Date, cast, func, select
@@ -30,8 +30,9 @@ async def save_meal(
     """
     Persist a meal from an AI analysis result.
 
-    Sets first_meal_at on the user if this is their first meal.
+    Sets first_meal_at and last_active_date on the user if needed.
     Recalculates the daily aggregate.
+    Resets inactivity_reminder_count to 0.
     """
     meal = Meal(
         user_id=user.id,
@@ -53,8 +54,34 @@ async def save_meal(
     if user.first_meal_at is None:
         user.first_meal_at = datetime.now(timezone.utc)
 
+    user.last_active_date = _today_utc()
+    user.inactivity_reminder_count = 0
+
     await recalculate_daily_aggregate(user.id, _today_utc(), db)
     return meal
+
+
+async def update_meal(
+    meal: Meal,
+    items: list[dict],
+    totals: dict,
+    db: AsyncSession,
+) -> None:
+    """
+    Update an existing meal in-place with patched items and new totals.
+
+    items: list of dicts with keys name, portion_description, calories,
+           protein_g, fat_g, carbs_g (no ids — stripped before storing).
+    totals: dict with keys calories, protein_g, fat_g, carbs_g.
+    Recalculates the daily aggregate after update.
+    """
+    meal.meal_items = items
+    meal.calories = totals["calories"]
+    meal.protein_g = totals["protein_g"]
+    meal.fat_g = totals["fat_g"]
+    meal.carbs_g = totals["carbs_g"]
+    await db.flush()
+    await recalculate_daily_aggregate(meal.user_id, _today_utc(), db)
 
 
 async def confirm_meal(meal: Meal, db: AsyncSession) -> None:
@@ -71,6 +98,37 @@ async def delete_meal(meal: Meal, db: AsyncSession) -> None:
 async def get_meal_by_id(meal_id: int, db: AsyncSession) -> Meal | None:
     result = await db.execute(select(Meal).where(Meal.id == meal_id))
     return result.scalar_one_or_none()
+
+
+async def get_recent_meal(
+    user_id: int,
+    within_minutes: int,
+    exclude_meal_id: int | None,
+    db: AsyncSession,
+) -> Meal | None:
+    """
+    Return the most recent non-deleted meal for this user within the given
+    time window, optionally excluding a specific meal id.
+
+    Used for duplicate detection: after saving a new meal, check whether
+    a similar meal was logged recently.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=within_minutes)
+    stmt = (
+        select(Meal)
+        .where(
+            Meal.user_id == user_id,
+            Meal.is_deleted == False,  # noqa: E712
+            Meal.logged_at >= cutoff,
+        )
+        .order_by(Meal.logged_at.desc())
+    )
+    result = await db.execute(stmt)
+    meals = result.scalars().all()
+    for meal in meals:
+        if meal.id != exclude_meal_id:
+            return meal
+    return None
 
 
 async def recalculate_daily_aggregate(

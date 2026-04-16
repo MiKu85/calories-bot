@@ -1,28 +1,20 @@
 """
-Food photo analysis handler.
+Food photo analysis handler — routes through the debounce buffer (Task 5).
 
 Flow:
   photo message (optionally with caption as user hint)
     → download highest-resolution Telegram photo (in-memory, never persisted)
-    → VisionProvider.analyze_meal_photo(bytes, mime_type, user_hint)
-    → needs_clarification? → explain + ask to describe by text/voice
-    → confidence LOW but clarification not triggered?
-        → save with low-confidence note + cautious disclaimer in reply
-    → confidence MEDIUM/HIGH → save + standard reply
-    → same keyboard as text/voice: ✅ Верно · ✏️ Исправить · 📊 Статистика
+    → add to MealDebounceService buffer
+    → MealDebounceService fires flush_meal_buffer() after silence window
+    → flush builds BatchMessage, calls LLM, saves meal, replies to user
 
-Honesty rules (per product spec):
-  - Bot MUST say it is not sure when confidence is low.
-  - Bot MUST NOT present photo estimates as medically reliable.
-  - Photo disclaimer is always shown regardless of confidence level.
-  - When needs_clarification=True, bot MUST ask for clarification; MUST NOT save.
+The actual analysis + save + reply now lives in bot/handlers/meal_batch.py.
+This handler is responsible only for downloading the file and handing it off
+to the debounce service so the timer starts as early as possible.
 
 Error / fallback scenarios:
-  1. Photo download fails          → ask to try again or describe by text
-  2. Vision provider error (3 retry) → ask to describe by text or voice
-  3. Invalid / unparseable response  → handled inside provider → needs_clarification=True
-  4. No food visible in photo        → provider sets needs_clarification=True with explanation
-  5. Multiple dishes, too uncertain  → provider sets needs_clarification=True
+  1. Photo download fails → ask to try again or describe by text
+  2. Onboarding not complete → redirect to /start
 """
 from __future__ import annotations
 
@@ -33,28 +25,13 @@ from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.ai import get_vision_provider
-from bot.ai.schemas import ConfidenceLevel
-from bot.db.models import MealInputType, User
-from bot.handlers.meal import MealStates, OnboardingCompleted, save_and_reply_meal
+from bot.db.models import User
+from bot.handlers.meal import MealStates, OnboardingCompleted
+from bot.services.debounce_service import BufferedMessage, meal_debounce_service
 
 logger = structlog.get_logger(__name__)
 router = Router(name="photo")
-
-# Always shown for photo-based estimates — product honesty requirement
-_PHOTO_DISCLAIMER = (
-    "Оценка по фото — приблизительная. "
-    "Точность зависит от качества снимка и видимости порций."
-)
-
-# Wording for different confidence levels shown before the result
-_CONFIDENCE_NOTE = {
-    ConfidenceLevel.high: None,  # no extra note
-    ConfidenceLevel.medium: "Оценка приблизительная — блюдо понятно, но порция может отличаться.",
-    ConfidenceLevel.low: "Уверенность низкая — порции трудно определить по фото. Данные очень ориентировочные.",
-}
 
 
 @router.message(
@@ -67,24 +44,20 @@ async def handle_photo_meal(
     user: User,
     bot: Bot,
     state: FSMContext,
-    db: AsyncSession,
 ) -> None:
     await state.clear()
 
     log = logger.bind(telegram_id=user.telegram_id)
+    caption: str | None = message.caption.strip() if message.caption else None
 
-    # Caption (if any) is passed as a hint to the vision model
-    user_hint: str | None = message.caption.strip() if message.caption else None
-
-    # ── 1. Download highest-resolution photo ──────────────────────────────────
-    # Telegram provides multiple sizes; last element is the largest.
+    # ── Download highest-resolution photo ─────────────────────────────────────
     photo = message.photo[-1]
-
     try:
         file = await bot.get_file(photo.file_id)
         buf = io.BytesIO()
         await bot.download_file(file.file_path, destination=buf)
         image_bytes = buf.getvalue()
+        buf.close()
     except Exception as exc:
         log.error("photo_download_failed", error=str(exc))
         await message.answer(
@@ -92,61 +65,21 @@ async def handle_photo_meal(
         )
         return
 
-    log.info("photo_downloaded", file_size=len(image_bytes), has_hint=bool(user_hint))
+    log.info("photo_downloaded_to_buffer", file_size=len(image_bytes), has_caption=bool(caption))
 
-    # ── 2. Analyze via Vision provider ────────────────────────────────────────
-    provider = get_vision_provider()
-    try:
-        result = await provider.analyze_meal_photo(
-            image_bytes=image_bytes,
-            mime_type="image/jpeg",  # Telegram photos are always JPEG
-            user_hint=user_hint,
-        )
-    except Exception as exc:
-        log.error("photo_analysis_failed", error=str(exc))
-        await message.answer(
-            "Не смог проанализировать фото — попробуй ещё раз или опиши еду текстом/голосом."
-        )
-        return
-    finally:
-        # Release image bytes immediately — do not hold in memory
-        del image_bytes
-        buf.close()
-
-    log.info(
-        "photo_analyzed",
-        confidence=result.confidence,
-        needs_clarification=result.needs_clarification,
-        items=len(result.items),
+    # ── Hand off to debounce service ──────────────────────────────────────────
+    # The service starts the typing indicator and the silence timer.
+    # When the timer fires, flush_meal_buffer() handles the rest.
+    msg = BufferedMessage(
+        kind="photo",
+        image_bytes=image_bytes,
+        mime_type="image/jpeg",
+        caption=caption,
     )
-
-    # ── 3. Handle low-confidence / ambiguous result ───────────────────────────
-    if result.needs_clarification:
-        clarification = result.clarification_prompt or (
-            "Не смог точно определить блюдо по фото. "
-            "Опиши, что ел(а), текстом или голосом — и я всё посчитаю."
-        )
-        if result.confidence_notes:
-            clarification = f"{clarification}\n\n<i>Причина: {result.confidence_notes}</i>"
-        await message.answer(clarification)
-        return
-
-    # ── 4. Build disclaimer for this confidence level ─────────────────────────
-    conf_note = _CONFIDENCE_NOTE.get(result.confidence)
-    disclaimer_parts = [_PHOTO_DISCLAIMER]
-    if conf_note:
-        disclaimer_parts.append(conf_note)
-    disclaimer = " ".join(disclaimer_parts)
-
-    # ── 5. Save + reply (shared with text/voice flow) ─────────────────────────
-    await save_and_reply_meal(
-        message=message,
-        result=result,
-        input_type=MealInputType.photo,
-        raw_input=user_hint,  # store caption hint as raw_input; photo itself is not persisted
-        user=user,
-        db=db,
-        disclaimer=disclaimer,
+    await meal_debounce_service.add_message(
+        telegram_id=user.telegram_id,
+        chat_id=message.chat.id,
+        msg=msg,
     )
 
 

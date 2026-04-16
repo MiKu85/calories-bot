@@ -4,11 +4,15 @@ OpenAI vision meal analysis provider.
 Images are passed as base64 inline data — not stored after analysis.
 Low-confidence results always trigger a clarification request rather
 than fabricated numbers.
+
+System prompt is loaded from bot/prompts/vision_meal.txt so it can be
+edited without a code redeploy.
 """
 from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 
 import structlog
 from openai import AsyncOpenAI
@@ -20,26 +24,16 @@ from tenacity import (
     wait_exponential,
 )
 
-from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
+from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult
 
 logger = structlog.get_logger(__name__)
 
-_SYSTEM_PROMPT = """\
-Ты — помощник-нутрициолог. Тебе дают фотографию еды.
-Твоя задача — оценить КБЖУ (калории, белки, жиры, углеводы).
+_PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "vision_meal.txt"
 
-Правила:
-1. Всегда возвращай валидный JSON строго по схеме.
-2. Раздели блюдо на компоненты (items), если их несколько на фото.
-3. Оценивай порцию по визуальным признакам: размер тарелки, сравнение с другими предметами на фото, видимый объём.
-4. НИКОГДА не спрашивай вес в граммах. Используй стандартные справочные веса и визуальную оценку.
-5. confidence="high" только если блюдо чётко распознано И порция хорошо видна.
-6. confidence="medium" если блюдо понятно, но порция приблизительная — это нормально, сохраняй результат.
-7. needs_clarification=true только если блюдо совсем не опознано или фото нечёткое настолько, что невозможно ничего определить.
-8. Напитки включай только если они явно видны на фото.
-9. Все текстовые поля — на русском языке.
-10. Если на фото нет еды вообще — needs_clarification=true, clarification_prompt="На фото не видно еды. Отправь другое фото или опиши приём пищи текстом."
-"""
+
+def _load_system_prompt() -> str:
+    return _PROMPT_FILE.read_text(encoding="utf-8").strip()
+
 
 _JSON_SCHEMA = {
     "type": "object",
@@ -95,6 +89,8 @@ class OpenAIVisionProvider:
         user_hint: str | None = None,
     ) -> MealAnalysisResult:
         log = logger.bind(model=self._model, image_size=len(image_bytes), has_hint=bool(user_hint))
+        system_prompt = _load_system_prompt()
+        log.debug("meal_vision_prompt", prompt_chars=len(system_prompt), user_hint=user_hint)
 
         b64 = base64.b64encode(image_bytes).decode()
         image_url = f"data:{mime_type};base64,{b64}"
@@ -109,7 +105,7 @@ class OpenAIVisionProvider:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
                 response_format={
@@ -125,6 +121,7 @@ class OpenAIVisionProvider:
             )
 
             raw = response.choices[0].message.content
+            log.debug("meal_vision_raw_response", raw=raw)
             data = json.loads(raw)
             result = MealAnalysisResult.model_validate(data)
             log.info(
@@ -133,6 +130,7 @@ class OpenAIVisionProvider:
                 needs_clarification=result.needs_clarification,
                 items=len(result.items),
             )
+            log.debug("meal_vision_parsed", items=data.get("items"))
             return result
 
         except (json.JSONDecodeError, ValidationError) as exc:

@@ -118,6 +118,10 @@ class User(Base):
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Moscow", nullable=False, server_default="Europe/Moscow")
     morning_sent_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
+    # Inactivity reminders
+    last_active_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inactivity_reminder_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

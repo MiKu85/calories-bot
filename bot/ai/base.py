@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from bot.ai.schemas import MealAnalysisResult, TranscriptionResult
+from bot.ai.schemas import MealAnalysisResult, MealPatchResult, TranscriptionResult
 
 
 @runtime_checkable
@@ -43,6 +43,27 @@ class VisionProvider(Protocol):
         - Drinks are included only when clearly visible.
 
         user_hint: optional text from the user describing the photo.
+        """
+        ...
+
+
+@runtime_checkable
+class PatchProvider(Protocol):
+    """Applies a natural-language correction to an existing meal."""
+
+    async def patch_meal(
+        self,
+        current_items: list[dict],
+        user_message: str,
+    ) -> MealPatchResult:
+        """
+        Apply user's correction to existing meal items.
+
+        current_items: list of dicts with sequential ids + KBJU fields.
+        user_message: free-text Russian correction.
+
+        Returns updated items list. If the correction cannot be understood,
+        returns understood=False with a clarification prompt.
         """
         ...
 

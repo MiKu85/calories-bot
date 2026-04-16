@@ -99,7 +99,13 @@ def format_meal_result(
         lines.append("<b>Что записал(а):</b>")
         for item in meal_items:
             kcal = int(item["calories"])
-            lines.append(f"· {item['name']} ({item['portion_description']}) — {kcal} ккал")
+            prot = int(item.get("protein_g", 0))
+            fat = int(item.get("fat_g", 0))
+            carbs = int(item.get("carbs_g", 0))
+            lines.append(
+                f"· {item['name']} ({item['portion_description']}) — "
+                f"{kcal} ккал · Б {prot} · Ж {fat} · У {carbs}"
+            )
         lines.append("")
 
     # This meal totals

@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
 
+    # Meal deduplication
+    meal_duplicate_window_minutes: int = 10  # window to check for possible duplicate meals
+    meal_duplicate_similarity_threshold: float = 0.30  # Jaccard word overlap to trigger warning
+
+    # Meal debounce — multimodal message merging (Task 5)
+    meal_debounce_seconds: int = 12          # silence window after last message before flush
+    meal_debounce_max_total_seconds: int = 90  # hard cap: flush even if messages keep arriving
+    meal_debounce_max_messages: int = 5      # hard cap on messages per batch
+    meal_augment_window_minutes: int = 7     # how long "➕ Дополнить" button stays active
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

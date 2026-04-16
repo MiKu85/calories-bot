@@ -3,10 +3,14 @@ OpenAI text meal analysis provider.
 
 Uses structured JSON output (response_format) so the response is always
 a valid JSON object — no fragile regex parsing.
+
+System prompt is loaded from bot/prompts/parse_meal.txt so it can be
+edited without a code redeploy.
 """
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import structlog
 from openai import AsyncOpenAI
@@ -18,32 +22,16 @@ from tenacity import (
     wait_exponential,
 )
 
-from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
+from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult
 
 logger = structlog.get_logger(__name__)
 
-_SYSTEM_PROMPT = """\
-Ты — помощник-нутрициолог. Тебе дают описание еды на русском языке.
-Твоя задача — оценить КБЖУ (калории, белки, жиры, углеводы).
+_PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "parse_meal.txt"
 
-Правила:
-1. Всегда возвращай валидный JSON строго по схеме.
-2. Раздели блюдо на отдельные компоненты (items), если их несколько.
-3. НИКОГДА не спрашивай вес в граммах. Люди не взвешивают еду — они называют блюдо и примерный размер.
-4. Используй стандартные справочные веса для оценки порций:
-   - средний банан ~120г, маленький ~80г, большой ~160г
-   - средний киви ~80г, среднее яблоко ~180г, средний апельсин ~160г
-   - средний сырник ~55г, средняя котлета ~80г, средняя куриная грудка ~150г
-   - тарелка супа/каши ~300г, порция гарнира ~150-200г, ломтик хлеба ~30г
-   - стакан молока/сока ~200мл, чашка кофе ~150мл
-   - если написано "большой/крупный" — увеличь на 30-40%, "маленький/мелкий" — уменьши на 30-40%
-5. Если порция вообще не указана и непонятна по контексту — предположи стандартную и выставь confidence="medium".
-6. needs_clarification=true ТОЛЬКО если совершенно непонятно КАКОЙ продукт имеется в виду.
-   Если непонятен только размер — спроси "большая, средняя или маленькая порция?" (но не вес в граммах).
-7. confidence="high" если блюдо и размер понятны. confidence="medium" если размер приблизительный.
-8. Напитки включай только если явно упомянуты.
-9. Все текстовые поля — на русском языке.
-"""
+
+def _load_system_prompt() -> str:
+    return _PROMPT_FILE.read_text(encoding="utf-8").strip()
+
 
 _JSON_SCHEMA = {
     "type": "object",
@@ -94,11 +82,13 @@ class OpenAITextProvider:
     )
     async def analyze_meal(self, text: str) -> MealAnalysisResult:
         log = logger.bind(model=self._model, input_preview=text[:80])
+        system_prompt = _load_system_prompt()
+        log.debug("meal_text_prompt", prompt_chars=len(system_prompt), user_input=text)
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
                 response_format={
@@ -114,9 +104,11 @@ class OpenAITextProvider:
             )
 
             raw = response.choices[0].message.content
+            log.debug("meal_text_raw_response", raw=raw)
             data = json.loads(raw)
             result = MealAnalysisResult.model_validate(data)
             log.info("meal_text_analyzed", confidence=result.confidence, items=len(result.items))
+            log.debug("meal_text_parsed", items=data.get("items"))
             return result
 
         except (json.JSONDecodeError, ValidationError) as exc:
