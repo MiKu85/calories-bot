@@ -173,6 +173,13 @@ class Meal(Base):
     is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Soft-delete audit fields (set together with is_deleted=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Points to the meal that replaced this one (for edit history chain)
+    replaced_by_meal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("meals.id"), nullable=True
+    )
+
     logged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

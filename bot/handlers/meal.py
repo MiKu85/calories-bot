@@ -43,11 +43,13 @@ from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
 from bot.db.models import MealInputType, OnboardingState, User
 from bot.keyboards.meal import meal_result_kb
 from bot.services.meal_service import (
+    MealSpec,
     confirm_meal,
     delete_meal,
     get_meal_by_id,
     get_recent_meal,
     get_today_aggregate,
+    replace_meal,
     save_meal,
     update_meal,
 )
@@ -241,6 +243,155 @@ async def handle_text_meal(
     )
 
 
+# ── Patch mode: shared logic ──────────────────────────────────────────────────
+
+async def _apply_patch(
+    correction_text: str,
+    meal_id: int,
+    user: User,
+    message: Message,
+    state: FSMContext,
+    db: AsyncSession,
+) -> None:
+    """
+    Core patch logic shared by text and voice handlers.
+
+    Always soft-deletes the old meal and inserts new one(s).
+    Never mutates the original row — this preserves a full edit history.
+    """
+    meal = await get_meal_by_id(meal_id, db)
+    if meal is None or meal.user_id != user.id or meal.is_deleted:
+        await state.clear()
+        await message.answer("Приём не найден. Опиши его заново.")
+        return
+
+    log = logger.bind(telegram_id=user.telegram_id, meal_id=meal_id)
+
+    current_items = items_to_patch_input(meal.meal_items or [])
+    if not current_items:
+        # No structured items — fall back to re-describe from scratch.
+        # Soft-delete the ghost meal first so the counter isn't doubled.
+        await delete_meal(meal, db)
+        await state.clear()
+        await run_meal_pipeline(
+            message=message,
+            text=correction_text,
+            input_type=MealInputType.text,
+            user=user,
+            db=db,
+        )
+        return
+
+    provider = get_patch_provider()
+    try:
+        patch_result = await provider.patch_meal(
+            current_items=current_items,
+            user_message=correction_text,
+        )
+    except Exception as exc:
+        log.error("meal_patch_failed", error=str(exc))
+        await message.answer("Не смог применить правку — попробуй ещё раз.")
+        return
+
+    if not patch_result.understood:
+        clarification = patch_result.clarification_prompt or (
+            "Не понял, что именно исправить. Напиши точнее — "
+            "например «сырники не 220, а 150г» или «убери кофе»."
+        )
+        await message.answer(clarification)
+        return
+
+    await state.clear()
+
+    # Build specs for all resulting meals
+    first_items = patch_result_to_items(patch_result.items)
+    specs: list[MealSpec] = [
+        MealSpec(
+            items=first_items,
+            calories=patch_result.total_calories,
+            protein_g=patch_result.total_protein_g,
+            fat_g=patch_result.total_fat_g,
+            carbs_g=patch_result.total_carbs_g,
+        )
+    ]
+    for extra in patch_result.extra_meals:
+        extra_items = [
+            {
+                "name": it.name,
+                "portion_description": it.portion_description,
+                "calories": it.calories,
+                "protein_g": it.protein_g,
+                "fat_g": it.fat_g,
+                "carbs_g": it.carbs_g,
+            }
+            for it in extra.items
+        ]
+        specs.append(
+            MealSpec(
+                items=extra_items,
+                calories=extra.total_calories,
+                protein_g=extra.total_protein_g,
+                fat_g=extra.total_fat_g,
+                carbs_g=extra.total_carbs_g,
+            )
+        )
+
+    # Atomic: soft-delete old meal, insert new meal(s)
+    try:
+        new_meals = await replace_meal(old_meal=meal, specs=specs, db=db)
+    except Exception as exc:
+        log.error("meal_replace_failed", error=str(exc))
+        await message.answer(
+            "Не удалось применить исправление — попробуй ещё раз."
+        )
+        return
+
+    new_ids = [m.id for m in new_meals]
+    log.info(
+        "meal_replaced",
+        meal_id_before=meal_id,
+        meal_ids_after=new_ids,
+        split_count=len(new_meals),
+    )
+
+    # ── Split response ────────────────────────────────────────────────────────
+    if len(new_meals) > 1:
+        await message.answer(f"Разделил на {len(new_meals)} приёма — вот они:")
+
+        for idx, (spec, new_meal) in enumerate(zip(specs, new_meals), start=1):
+            agg = await get_today_aggregate(user.id, db)
+            response = format_meal_result(
+                meal_calories=spec.calories,
+                meal_protein=spec.protein_g,
+                meal_fat=spec.fat_g,
+                meal_carbs=spec.carbs_g,
+                meal_items=spec.items,
+                agg=agg,
+                user=user,
+            )
+            await message.answer(
+                f"<b>Приём {idx}:</b>\n\n{response}",
+                reply_markup=meal_result_kb(new_meal.id, show_clarify=False, show_augment=False),
+            )
+        return
+
+    # ── Regular patch: single meal replaced ──────────────────────────────────
+    agg = await get_today_aggregate(user.id, db)
+    response = format_meal_result(
+        meal_calories=specs[0].calories,
+        meal_protein=specs[0].protein_g,
+        meal_fat=specs[0].fat_g,
+        meal_carbs=specs[0].carbs_g,
+        meal_items=first_items,
+        agg=agg,
+        user=user,
+    )
+    await message.answer(
+        f"Исправил!\n\n{response}",
+        reply_markup=meal_result_kb(new_meals[0].id, show_clarify=False),
+    )
+
+
 # ── Patch mode: text correction ───────────────────────────────────────────────
 
 @router.message(
@@ -260,163 +411,79 @@ async def handle_patch_text(
         await state.clear()
         await message.answer("Что-то пошло не так. Попробуй описать приём заново.")
         return
+    await _apply_patch(
+        correction_text=message.text.strip(),
+        meal_id=meal_id,
+        user=user,
+        message=message,
+        state=state,
+        db=db,
+    )
 
-    meal = await get_meal_by_id(meal_id, db)
-    if meal is None or meal.user_id != user.id or meal.is_deleted:
-        await state.clear()
-        await message.answer("Приём не найден. Опиши его заново.")
-        return
 
-    current_items = items_to_patch_input(meal.meal_items or [])
-    if not current_items:
-        # No structured items to patch — fall back to re-describe.
-        # Soft-delete the original meal first so the daily counter isn't doubled.
-        await delete_meal(meal, db)
+# ── Patch mode: voice correction ─────────────────────────────────────────────
+
+@router.message(
+    OnboardingCompleted(),
+    StateFilter(MealStates.awaiting_patch),
+    F.voice,
+)
+async def handle_patch_voice(
+    message: Message,
+    user: User,
+    state: FSMContext,
+    db: AsyncSession,
+    bot,
+) -> None:
+    """Handle voice corrections in patch mode (transcribe → patch inline)."""
+    from bot.ai.factory import get_stt_provider
+    import io
+
+    data = await state.get_data()
+    meal_id = data.get("patch_meal_id")
+    if not meal_id:
         await state.clear()
-        await run_meal_pipeline(
-            message=message,
-            text=message.text.strip(),
-            input_type=MealInputType.text,
-            user=user,
-            db=db,
-        )
+        await message.answer("Что-то пошло не так. Попробуй описать приём заново.")
         return
 
     log = logger.bind(telegram_id=user.telegram_id, meal_id=meal_id)
-    provider = get_patch_provider()
+
     try:
-        patch_result = await provider.patch_meal(
-            current_items=current_items,
-            user_message=message.text.strip(),
-        )
+        file = await bot.get_file(message.voice.file_id)
+        buf = io.BytesIO()
+        await bot.download_file(file.file_path, destination=buf)
+        audio_bytes = buf.getvalue()
+        buf.close()
     except Exception as exc:
-        log.error("meal_patch_failed", error=str(exc))
-        await message.answer("Не смог применить правку — попробуй ещё раз.")
-        return
-
-    if not patch_result.understood:
-        # Keep state, ask for clarification without resetting
-        clarification = patch_result.clarification_prompt or (
-            "Не понял, что именно исправить. Напиши точнее — "
-            "например «сырники не 220, а 150г» или «убери кофе»."
-        )
-        await message.answer(clarification)
-        return
-
-    # Apply patch in-place (always update the original meal)
-    new_items = patch_result_to_items(patch_result.items)
-    totals = {
-        "calories": patch_result.total_calories,
-        "protein_g": patch_result.total_protein_g,
-        "fat_g": patch_result.total_fat_g,
-        "carbs_g": patch_result.total_carbs_g,
-    }
-    await update_meal(meal, new_items, totals, db)
-    log.info("meal_patched", items=len(new_items), split=bool(patch_result.extra_meals))
-
-    await state.clear()
-
-    # ── Split: user asked to break one meal into several ─────────────────────
-    if patch_result.extra_meals:
-        extra_meal_ids: list[int] = []
-        for extra in patch_result.extra_meals:
-            extra_analysis = MealAnalysisResult(
-                items=[
-                    MealItem(
-                        name=it.name,
-                        portion_description=it.portion_description,
-                        calories=it.calories,
-                        protein_g=it.protein_g,
-                        fat_g=it.fat_g,
-                        carbs_g=it.carbs_g,
-                    )
-                    for it in extra.items
-                ],
-                total_calories=extra.total_calories,
-                total_protein_g=extra.total_protein_g,
-                total_fat_g=extra.total_fat_g,
-                total_carbs_g=extra.total_carbs_g,
-                confidence=ConfidenceLevel.medium,
-            )
-            new_meal = await save_meal(
-                user=user,
-                input_type=meal.input_type,
-                raw_input=meal.raw_input,
-                result=extra_analysis,
-                db=db,
-            )
-            # Preserve the original meal's timestamp so all parts land in the
-            # same "meal event" slot when the user reviews their history.
-            new_meal.logged_at = meal.logged_at
-            await db.flush()
-            extra_meal_ids.append(new_meal.id)
-
-        split_count = 1 + len(extra_meal_ids)
+        log.error("patch_voice_download_failed", error=str(exc))
         await message.answer(
-            f"Разделил на {split_count} приёма — вот они:"
+            "Не удалось загрузить голосовое — попробуй написать текстом, что изменить."
         )
-
-        # Show first (updated) meal
-        agg = await get_today_aggregate(user.id, db)
-        first_response = format_meal_result(
-            meal_calories=patch_result.total_calories,
-            meal_protein=patch_result.total_protein_g,
-            meal_fat=patch_result.total_fat_g,
-            meal_carbs=patch_result.total_carbs_g,
-            meal_items=new_items,
-            agg=agg,
-            user=user,
-        )
-        await message.answer(
-            f"<b>Приём 1:</b>\n\n{first_response}",
-            reply_markup=meal_result_kb(meal.id, show_clarify=False, show_augment=False),
-        )
-
-        # Show each extra meal
-        for idx, (extra, extra_id) in enumerate(
-            zip(patch_result.extra_meals, extra_meal_ids), start=2
-        ):
-            extra_items_dict = [
-                {
-                    "name": it.name,
-                    "portion_description": it.portion_description,
-                    "calories": it.calories,
-                    "protein_g": it.protein_g,
-                    "fat_g": it.fat_g,
-                    "carbs_g": it.carbs_g,
-                }
-                for it in extra.items
-            ]
-            agg = await get_today_aggregate(user.id, db)
-            extra_response = format_meal_result(
-                meal_calories=extra.total_calories,
-                meal_protein=extra.total_protein_g,
-                meal_fat=extra.total_fat_g,
-                meal_carbs=extra.total_carbs_g,
-                meal_items=extra_items_dict,
-                agg=agg,
-                user=user,
-            )
-            await message.answer(
-                f"<b>Приём {idx}:</b>\n\n{extra_response}",
-                reply_markup=meal_result_kb(extra_id, show_clarify=False, show_augment=False),
-            )
         return
 
-    # ── Regular patch: single meal updated in-place ───────────────────────────
-    agg = await get_today_aggregate(user.id, db)
-    response = format_meal_result(
-        meal_calories=patch_result.total_calories,
-        meal_protein=patch_result.total_protein_g,
-        meal_fat=patch_result.total_fat_g,
-        meal_carbs=patch_result.total_carbs_g,
-        meal_items=new_items,
-        agg=agg,
+    stt = get_stt_provider()
+    try:
+        result = await stt.transcribe(audio_bytes, mime_type="audio/ogg")
+        transcription = result.text.strip()
+    except Exception as exc:
+        log.error("patch_voice_stt_failed", error=str(exc))
+        await message.answer(
+            "Не удалось распознать голосовое — попробуй написать текстом, что изменить."
+        )
+        return
+
+    if not transcription:
+        await message.answer("Не разобрал, что сказано. Напиши текстом, что изменить.")
+        return
+
+    log.info("patch_voice_transcribed", chars=len(transcription))
+    await _apply_patch(
+        correction_text=transcription,
+        meal_id=meal_id,
         user=user,
-    )
-    await message.answer(
-        f"Исправил!\n\n{response}",
-        reply_markup=meal_result_kb(meal.id, show_clarify=False),
+        message=message,
+        state=state,
+        db=db,
     )
 
 

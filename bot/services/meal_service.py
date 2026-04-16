@@ -3,6 +3,13 @@ Meal service — save, soft-delete, patch, and daily aggregate management.
 
 Daily aggregate is always recalculated from raw meal rows (no drift risk).
 All aggregate operations use UTC date.
+
+Soft-delete model
+-----------------
+Deleting a meal sets is_deleted=True + deleted_at=now().
+Replacing a meal (patch / fix) soft-deletes the old record and inserts a new
+one, linking them via replaced_by_meal_id.  This creates an immutable audit
+trail: every "Исправить" operation adds a row instead of mutating one.
 """
 from __future__ import annotations
 
@@ -13,7 +20,7 @@ from sqlalchemy import Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.ai.schemas import MealAnalysisResult
-from bot.db.models import DailyAggregate, Meal, MealInputType, User
+from bot.db.models import ConfidenceLevel, DailyAggregate, Meal, MealInputType, User
 
 
 def _today_utc() -> date_type:
@@ -91,8 +98,78 @@ async def confirm_meal(meal: Meal, db: AsyncSession) -> None:
 
 async def delete_meal(meal: Meal, db: AsyncSession) -> None:
     meal.is_deleted = True
+    meal.deleted_at = datetime.now(timezone.utc)
     await db.flush()
     await recalculate_daily_aggregate(meal.user_id, _today_utc(), db)
+
+
+class MealSpec:
+    """Describes one meal to create during a replace operation."""
+
+    def __init__(
+        self,
+        items: list[dict],
+        calories: float,
+        protein_g: float,
+        fat_g: float,
+        carbs_g: float,
+    ) -> None:
+        self.items = items
+        self.calories = calories
+        self.protein_g = protein_g
+        self.fat_g = fat_g
+        self.carbs_g = carbs_g
+
+
+async def replace_meal(
+    old_meal: Meal,
+    specs: list[MealSpec],
+    db: AsyncSession,
+) -> list[Meal]:
+    """
+    Replace old_meal with one or more new meals (atomic soft-delete + insert).
+
+    Soft-deletes old_meal and inserts len(specs) new Meal rows.
+    All new meals inherit old_meal.logged_at so they land on the same day.
+    old_meal.replaced_by_meal_id is set to the first new meal's id.
+
+    Returns the list of new Meal objects (ids are available after flush).
+    The caller is responsible for committing the transaction.
+    """
+    now = datetime.now(timezone.utc)
+    new_meals: list[Meal] = []
+
+    for spec in specs:
+        new_meal = Meal(
+            user_id=old_meal.user_id,
+            input_type=old_meal.input_type,
+            raw_input=old_meal.raw_input,
+            calories=spec.calories,
+            protein_g=spec.protein_g,
+            fat_g=spec.fat_g,
+            carbs_g=spec.carbs_g,
+            confidence=ConfidenceLevel.medium,
+            meal_items=spec.items,
+            is_confirmed=False,
+            is_deleted=False,
+            logged_at=old_meal.logged_at,
+        )
+        db.add(new_meal)
+        new_meals.append(new_meal)
+
+    await db.flush()  # assign ids to new meals
+
+    # Soft-delete the old meal and record the replacement chain
+    old_meal.is_deleted = True
+    old_meal.deleted_at = now
+    old_meal.replaced_by_meal_id = new_meals[0].id
+    await db.flush()
+
+    # Recalculate aggregate for the day of the original meal
+    meal_date = old_meal.logged_at.date() if old_meal.logged_at.tzinfo else _today_utc()
+    await recalculate_daily_aggregate(old_meal.user_id, meal_date, db)
+
+    return new_meals
 
 
 async def get_meal_by_id(meal_id: int, db: AsyncSession) -> Meal | None:
