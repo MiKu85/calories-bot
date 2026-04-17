@@ -65,7 +65,7 @@ def _remaining_str(consumed: float, target: float, unit: str) -> str:
     """
     remaining = target - consumed
     if remaining >= 0:
-        return f"осталось {int(remaining)}{unit}"
+        return f"{int(remaining)}{unit}"
     else:
         return f"<i>перебор {int(abs(remaining))}{unit}</i>"
 
