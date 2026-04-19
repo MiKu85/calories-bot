@@ -7,6 +7,8 @@ Rules:
   - No tip repeats within 14 days for the same user.
   - Tips are loaded from data/tips.json at import time.
 
+Display format: "{emoji} {text}" — one line, no extra formatting.
+
 Usage:
     tip = await maybe_get_tip(user, db)   # None or a tip string
     # Call after incrementing the meal counter (i.e., after confirmation).
@@ -32,7 +34,10 @@ except Exception:
     _TIPS = []
 
 _TIP_IDS: list[int] = [t["id"] for t in _TIPS]
-_TIP_BY_ID: dict[int, str] = {t["id"]: t["text"] for t in _TIPS}
+# id → display string "{emoji} {text}"
+_TIP_DISPLAY: dict[int, str] = {
+    t["id"]: f"{t['emoji']} {t['text']}" for t in _TIPS
+}
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -58,8 +63,11 @@ def _recent_tip_ids(user: User) -> set[int]:
     return recent
 
 
-def _pick_tip(user: User) -> str | None:
-    """Pick a random tip not shown in the last _DEDUP_DAYS."""
+def _pick_tip(user: User) -> tuple[int, str] | None:
+    """Pick a random tip not shown in the last _DEDUP_DAYS.
+
+    Returns (tip_id, display_string) or None if pool is empty.
+    """
     if not _TIP_IDS:
         return None
     recent = _recent_tip_ids(user)
@@ -68,20 +76,14 @@ def _pick_tip(user: User) -> str | None:
         # All tips shown recently — reset and pick any
         available = _TIP_IDS
     tip_id = random.choice(available)
-    return _TIP_BY_ID.get(tip_id)
+    display = _TIP_DISPLAY.get(tip_id)
+    if display is None:
+        return None
+    return tip_id, display
 
 
-def _record_tip(user: User, text: str) -> None:
+def _record_tip(user: User, tip_id: int) -> None:
     """Record the shown tip in user.tip_history (in-place mutation, caller flushes)."""
-    # Find tip_id by text
-    tip_id: int | None = None
-    for t in _TIPS:
-        if t["text"] == text:
-            tip_id = t["id"]
-            break
-    if tip_id is None:
-        return
-
     history: list[dict] = list(user.tip_history or [])
     today_str = datetime.now(timezone.utc).date().isoformat()
     history.append({"tip_id": tip_id, "shown_at": today_str})
@@ -102,12 +104,13 @@ async def get_morning_tip(user: User, db: AsyncSession) -> str | None:
     Uses the same 14-day dedup logic as maybe_get_tip.
     Records the tip in history so it won't repeat for 14 days.
     """
-    tip = _pick_tip(user)
-    if tip is None:
+    result = _pick_tip(user)
+    if result is None:
         return None
-    _record_tip(user, tip)
+    tip_id, display = result
+    _record_tip(user, tip_id)
     await db.flush()
-    return tip
+    return display
 
 
 async def maybe_get_tip(user: User, db: AsyncSession) -> str | None:
@@ -137,11 +140,12 @@ async def maybe_get_tip(user: User, db: AsyncSession) -> str | None:
         await db.flush()
         return None
 
-    tip = _pick_tip(user)
-    if tip is None:
+    result = _pick_tip(user)
+    if result is None:
         await db.flush()
         return None
 
-    _record_tip(user, tip)
+    tip_id, display = result
+    _record_tip(user, tip_id)
     await db.flush()
-    return tip
+    return display
