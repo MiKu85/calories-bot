@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     meal_debounce_max_messages: int = 5      # hard cap on messages per batch
     meal_augment_window_minutes: int = 7     # how long "➕ Дополнить" button stays active
 
+    # Clarification
+    max_clarification_rounds: int = 1        # max times bot may ask a clarifying question per meal
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

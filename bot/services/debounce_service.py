@@ -96,6 +96,7 @@ class MealDebounceService:
         self._debounce_seconds: int = 12
         self._max_total_seconds: int = 90
         self._max_messages: int = 5
+        self._fsm_storage = None  # set via init(); used by flush_meal_buffer to set FSM state
 
     # ── Initialisation (called once from main.py) ─────────────────────────────
 
@@ -107,12 +108,14 @@ class MealDebounceService:
         debounce_seconds: int = 12,
         max_total_seconds: int = 90,
         max_messages: int = 5,
+        fsm_storage=None,
     ) -> None:
         self._bot = bot
         self._flush_callback = flush_callback
         self._debounce_seconds = debounce_seconds
         self._max_total_seconds = max_total_seconds
         self._max_messages = max_messages
+        self._fsm_storage = fsm_storage
 
     # ── Public API ────────────────────────────────────────────────────────────
 

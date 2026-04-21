@@ -197,7 +197,23 @@ async def flush_meal_buffer(
                 )
                 if result.confidence_notes:
                     prompt = f"{prompt}\n\n<i>Причина: {result.confidence_notes}</i>"
-                await bot.send_message(chat_id, prompt)
+
+                # Save clarification context in FSM so the answer has full context
+                fsm_storage = meal_debounce_service._fsm_storage
+                if fsm_storage is not None:
+                    from aiogram.fsm.context import FSMContext
+                    from aiogram.fsm.storage.base import StorageKey
+                    from bot.handlers.meal import MealStates
+                    key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=telegram_id)
+                    fsm = FSMContext(storage=fsm_storage, key=key)
+                    await fsm.set_state(MealStates.awaiting_clarification)
+                    await fsm.update_data(
+                        clarification_original_text=raw_input or first_caption,
+                        clarification_question=prompt,
+                        clarification_rounds=1,
+                    )
+
+                await bot.send_message(chat_id, prompt, parse_mode="HTML")
                 continue
 
             if has_photo:

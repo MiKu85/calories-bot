@@ -217,7 +217,7 @@ async def find_and_fix(db: AsyncSession, *, days: int, fix: bool) -> None:
                   meals_count     = EXCLUDED.meals_count,
                   updated_at      = EXCLUDED.updated_at
         """)
-        await db.execute(recalc_stmt, {"uid": uid, "day": str(day)})
+        await db.execute(recalc_stmt, {"uid": uid, "day": day})
 
     await db.commit()
     print(f"\nMarked {len(to_delete)} meal(s) as deleted. Daily aggregates recalculated. Done.")

@@ -64,8 +64,9 @@ router = Router(name="meal")
 # ── FSM states ────────────────────────────────────────────────────────────────
 
 class MealStates(StatesGroup):
-    awaiting_correction = State()  # legacy: kept so old in-flight states don't break
-    awaiting_patch = State()       # new delta-update mode
+    awaiting_correction = State()     # legacy: kept so old in-flight states don't break
+    awaiting_patch = State()          # new delta-update mode
+    awaiting_clarification = State()  # waiting for user's answer to a clarification question
     # awaiting_augment lives in meal_batch.AugmentStates to avoid circular imports
 
 
@@ -217,6 +218,109 @@ async def run_meal_pipeline(
         result=result,
         input_type=input_type,
         raw_input=text,
+        user=user,
+        db=db,
+    )
+
+
+# ── Clarification answer handlers ────────────────────────────────────────────
+
+@router.message(
+    OnboardingCompleted(),
+    StateFilter(MealStates.awaiting_clarification),
+    F.text,
+)
+async def handle_clarification_text(
+    message: Message,
+    user: User,
+    state: FSMContext,
+    db: AsyncSession,
+) -> None:
+    await _handle_clarification_answer(message, message.text.strip(), user, state, db)
+
+
+@router.message(
+    OnboardingCompleted(),
+    StateFilter(MealStates.awaiting_clarification),
+    F.voice,
+)
+async def handle_clarification_voice(
+    message: Message,
+    user: User,
+    state: FSMContext,
+    db: AsyncSession,
+    bot,
+) -> None:
+    import io
+    from bot.ai.factory import get_stt_provider
+    try:
+        file = await bot.get_file(message.voice.file_id)
+        buf = io.BytesIO()
+        await bot.download_file(file.file_path, destination=buf)
+        audio_bytes = buf.getvalue()
+        buf.close()
+    except Exception as exc:
+        logger.error("clarification_voice_download_failed", error=str(exc))
+        await message.answer("Не удалось загрузить голосовое — ответь текстом.")
+        return
+
+    stt = get_stt_provider()
+    try:
+        result = await stt.transcribe(audio_bytes, mime_type="audio/ogg")
+        text = result.text.strip()
+    except Exception as exc:
+        logger.error("clarification_voice_stt_failed", error=str(exc))
+        await message.answer("Не удалось распознать голосовое — ответь текстом.")
+        return
+
+    if not text:
+        await message.answer("Не разобрал, что сказано. Ответь текстом.")
+        return
+
+    await _handle_clarification_answer(message, text, user, state, db)
+
+
+async def _handle_clarification_answer(
+    message: Message,
+    user_answer: str,
+    user: "User",
+    state: FSMContext,
+    db: "AsyncSession",
+) -> None:
+    """
+    Process the user's answer to a clarification question.
+    Combines original context + Q/A into a single LLM call.
+    After MAX rounds, adds a force-commit instruction so the LLM stops asking.
+    """
+    data = await state.get_data()
+    original_text: str = data.get("clarification_original_text") or ""
+    clarification_question: str = data.get("clarification_question") or ""
+    rounds: int = data.get("clarification_rounds", 1)
+
+    await state.clear()
+
+    # Build combined context — include everything the LLM needs
+    parts: list[str] = []
+    if original_text:
+        parts.append(original_text)
+    if clarification_question:
+        parts.append(f"Уточняющий вопрос: {clarification_question}")
+    parts.append(f"Ответ: {user_answer}")
+
+    combined = "\n\n".join(parts)
+
+    # If we've exhausted rounds, instruct the LLM to commit without asking again
+    if rounds >= settings.max_clarification_rounds:
+        combined += (
+            "\n\nВАЖНО: Это уже уточнённый ввод. "
+            "Запиши приём пищи с наилучшей оценкой на основе всей информации выше. "
+            "Не задавай дополнительных вопросов."
+        )
+
+    await run_meal_pipeline(
+        message=message,
+        text=combined,
+        input_type=MealInputType.text,
         user=user,
         db=db,
     )

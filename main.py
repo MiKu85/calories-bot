@@ -103,6 +103,7 @@ async def run_polling() -> None:
         debounce_seconds=settings.meal_debounce_seconds,
         max_total_seconds=settings.meal_debounce_max_total_seconds,
         max_messages=settings.meal_debounce_max_messages,
+        fsm_storage=dp.storage,
     )
     await _set_commands(bot)
     asyncio.create_task(feedback_scheduler_loop(bot, AsyncSessionLocal))
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
             debounce_seconds=settings.meal_debounce_seconds,
             max_total_seconds=settings.meal_debounce_max_total_seconds,
             max_messages=settings.meal_debounce_max_messages,
+            fsm_storage=dp.storage,
         )
         webhook_url = f"{settings.webhook_url}{settings.webhook_path}"
         await bot.set_webhook(webhook_url)
