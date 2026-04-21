@@ -20,11 +20,24 @@ from sqlalchemy import Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.ai.schemas import MealAnalysisResult
-from bot.db.models import ConfidenceLevel, DailyAggregate, Meal, MealInputType, User
+from bot.db.models import ConfidenceLevel, DailyAggregate, Meal, MealInputType, MealType, User
 
 
 def _today_utc() -> date_type:
     return datetime.now(timezone.utc).date()
+
+
+def _detect_meal_type(dt: datetime) -> MealType:
+    """Determine meal type from the hour of the logged_at timestamp (UTC)."""
+    hour = dt.hour
+    if 5 <= hour < 11:
+        return MealType.breakfast
+    elif 11 <= hour < 15:
+        return MealType.lunch
+    elif 15 <= hour < 18:
+        return MealType.snack
+    else:
+        return MealType.dinner
 
 
 async def save_meal(
@@ -41,9 +54,11 @@ async def save_meal(
     Recalculates the daily aggregate.
     Resets inactivity_reminder_count to 0.
     """
+    now = datetime.now(timezone.utc)
     meal = Meal(
         user_id=user.id,
         input_type=input_type,
+        meal_type=_detect_meal_type(now),
         raw_input=raw_input,
         calories=result.total_calories,
         protein_g=result.total_protein_g,

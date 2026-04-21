@@ -78,6 +78,19 @@ def _macro_remaining(label: str, consumed: float, target: float, unit: str = "г
 
 # ── Message formatters ────────────────────────────────────────────────────────
 
+def _format_portion(portion_description: str, is_photo: bool) -> str:
+    """
+    Clean up portion description for display.
+
+    For text input: strip leading ~ (weight is exact as stated by user).
+    For photo input: replace leading ~ with ≈ (visual estimate).
+    """
+    s = portion_description.strip()
+    if s.startswith("~"):
+        s = ("≈" if is_photo else "") + s[1:].strip()
+    return s
+
+
 def format_meal_result(
     meal_calories: float,
     meal_protein: float,
@@ -86,51 +99,63 @@ def format_meal_result(
     meal_items: list[dict] | None,
     agg: DailyAggregate,
     user: User,
+    is_photo: bool = False,
 ) -> str:
     """
     Message shown immediately after a meal is saved (before user confirmation).
 
-    Shows: meal breakdown → daily consumed → remaining → supportive phrase.
+    Format:
+      🍽 Приём пищи:
+
+      1. <b>Название</b> 100 г
+         18 ккал · Б 1 · Ж 0 · У 4
+
+      <b>Этот приём:</b> 253 ккал · Б 15 · Ж 18 · У 9
+
+      <b>Сегодня:</b> 382 ккал из 1736
+      <b>Осталось:</b> 1354 ккал · Б 88 · Ж 22 · У 198
     """
     lines: list[str] = []
 
-    # Items breakdown (if AI returned individual items)
+    # Header + numbered item list
     if meal_items:
-        lines.append("<b>Что записал(а):</b>")
-        for item in meal_items:
+        lines.append("🍽 <b>Приём пищи:</b>")
+        lines.append("")
+        for idx, item in enumerate(meal_items, start=1):
             kcal = int(item["calories"])
             prot = int(item.get("protein_g", 0))
             fat = int(item.get("fat_g", 0))
             carbs = int(item.get("carbs_g", 0))
-            lines.append(
-                f"· {item['name']} ({item['portion_description']}) — "
-                f"{kcal} ккал · Б {prot} · Ж {fat} · У {carbs}"
-            )
-        lines.append("")
+            portion = _format_portion(item.get("portion_description", ""), is_photo)
+            lines.append(f"{idx}. <b>{item['name']}</b> {portion}")
+            lines.append(f"   {kcal} ккал · Б {prot} · Ж {fat} · У {carbs}")
+            lines.append("")
 
     # This meal totals
     lines.append(
         f"<b>Этот приём:</b> {int(meal_calories)} ккал"
-        f"  Б {meal_protein:.0f}г · Ж {meal_fat:.0f}г · У {meal_carbs:.0f}г"
+        f" · Б {meal_protein:.0f} · Ж {meal_fat:.0f} · У {meal_carbs:.0f}"
     )
     lines.append("")
 
-    # Daily consumed
-    lines.append(
-        f"<b>Сегодня съедено:</b> {int(agg.total_calories)} ккал"
-        f"  Б {agg.total_protein_g:.0f}г · Ж {agg.total_fat_g:.0f}г · У {agg.total_carbs_g:.0f}г"
-    )
-
-    # Remaining (only when targets are set)
-    if user.targets_set:
+    # Daily progress
+    if user.targets_set and user.daily_calories_target:
+        lines.append(
+            f"<b>Сегодня:</b> {int(agg.total_calories)} ккал"
+            f" из {int(user.daily_calories_target)}"
+        )
         cal_str = _remaining_str(agg.total_calories, user.daily_calories_target, "ккал")
         prot_str = _macro_remaining("Б", agg.total_protein_g, user.daily_protein_g_target)
         fat_str = _macro_remaining("Ж", agg.total_fat_g, user.daily_fat_g_target)
         carbs_str = _macro_remaining("У", agg.total_carbs_g, user.daily_carbs_g_target)
-        lines.append(f"<b>Осталось:</b> {cal_str}  {prot_str} · {fat_str} · {carbs_str}")
+        lines.append(f"<b>Осталось:</b> {cal_str} · {prot_str} · {fat_str} · {carbs_str}")
+    else:
+        lines.append(
+            f"<b>Сегодня:</b> {int(agg.total_calories)} ккал"
+            f" · Б {agg.total_protein_g:.0f} · Ж {agg.total_fat_g:.0f}"
+            f" · У {agg.total_carbs_g:.0f}"
+        )
 
-    lines.append("")
-    lines.append(get_supportive_phrase())
     return "\n".join(lines)
 
 

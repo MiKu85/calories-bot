@@ -65,6 +65,13 @@ class MealInputType(str, enum.Enum):
     photo = "photo"
 
 
+class MealType(str, enum.Enum):
+    breakfast = "breakfast"
+    lunch = "lunch"
+    snack = "snack"
+    dinner = "dinner"
+
+
 class ConfidenceLevel(str, enum.Enum):
     high = "high"
     medium = "medium"
@@ -160,6 +167,7 @@ class Meal(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
     input_type: Mapped[MealInputType] = mapped_column(Enum(MealInputType), nullable=False)
+    meal_type: Mapped[MealType | None] = mapped_column(Enum(MealType), nullable=True)
     raw_input: Mapped[str | None] = mapped_column(Text)  # text or voice transcription
 
     # Nutrition

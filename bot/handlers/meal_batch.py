@@ -244,14 +244,10 @@ async def flush_meal_buffer(
                 meal_items=meal.meal_items,
                 agg=agg,
                 user=user,
+                is_photo=has_photo,
             )
             if disclaimer:
                 response = f"<i>{disclaimer}</i>\n\n{response}"
-
-            show_clarify = (
-                result.confidence in (ConfidenceLevel.medium, ConfidenceLevel.low)
-                or has_photo
-            )
 
             # "Объединить" button only on 2nd+ meal in a split batch
             prev_id = saved_meal_ids[idx - 1] if multi and idx > 0 else None
@@ -260,12 +256,7 @@ async def flush_meal_buffer(
                 chat_id,
                 response,
                 parse_mode="HTML",
-                reply_markup=meal_result_kb(
-                    meal.id,
-                    show_clarify=show_clarify,
-                    show_augment=True,
-                    prev_meal_id=prev_id,
-                ),
+                reply_markup=meal_result_kb(meal.id, prev_meal_id=prev_id),
             )
 
             log.info(
@@ -480,7 +471,7 @@ async def _apply_augment(
     )
     await message.answer(
         f"Добавил!\n\n{response}",
-        reply_markup=meal_result_kb(meal.id, show_clarify=False, show_augment=False),
+        reply_markup=meal_result_kb(meal.id),
     )
 
 
@@ -543,5 +534,5 @@ async def meal_merge_callback(
     )
     await callback.message.answer(
         f"Объединил в один приём!\n\n{response}",
-        reply_markup=meal_result_kb(prev_meal.id, show_clarify=False, show_augment=False),
+        reply_markup=meal_result_kb(prev_meal.id),
     )

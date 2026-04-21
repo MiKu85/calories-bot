@@ -41,8 +41,7 @@ from bot.ai import get_patch_provider, get_text_provider
 from bot.ai.openai_patch import items_to_patch_input, patch_result_to_items
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
 from bot.db.models import MealInputType, OnboardingState, User
-from bot.keyboards.meal import meal_detail_kb, meal_result_kb
-from bot.services.meal_rating import build_short_rating
+from bot.keyboards.meal import meal_confirm_kb, meal_result_kb
 from bot.services.meal_service import (
     MealSpec,
     confirm_meal,
@@ -55,7 +54,7 @@ from bot.services.meal_service import (
     update_meal,
 )
 from bot.services.stats_service import format_meal_result, format_stats
-from bot.services.tip_service import maybe_get_tip
+from bot.services.tip_service import maybe_get_tip  # shown in confirmation message
 from config import settings
 
 logger = structlog.get_logger(__name__)
@@ -122,6 +121,7 @@ async def save_and_reply_meal(
     )
 
     agg = await get_today_aggregate(user.id, db)
+    is_photo = input_type == MealInputType.photo
     response = format_meal_result(
         meal_calories=result.total_calories,
         meal_protein=result.total_protein_g,
@@ -130,19 +130,15 @@ async def save_and_reply_meal(
         meal_items=meal.meal_items,
         agg=agg,
         user=user,
+        is_photo=is_photo,
     )
 
     if disclaimer:
         response = f"<i>{disclaimer}</i>\n\n{response}"
 
-    # Show "Уточнить" button for medium/low confidence or photo meals
-    show_clarify = (
-        result.confidence in (ConfidenceLevel.medium, ConfidenceLevel.low)
-        or input_type == MealInputType.photo
-    )
     await message.answer(
         response,
-        reply_markup=meal_result_kb(meal.id, show_clarify=show_clarify, show_augment=True),
+        reply_markup=meal_result_kb(meal.id),
     )
     logger.bind(telegram_id=user.telegram_id).info(
         "meal_saved",
@@ -485,7 +481,7 @@ async def _apply_patch(
             )
             await message.answer(
                 f"<b>Приём {idx}:</b>\n\n{response}",
-                reply_markup=meal_result_kb(new_meal.id, show_clarify=False, show_augment=False),
+                reply_markup=meal_result_kb(new_meal.id),
             )
         return
 
@@ -502,7 +498,7 @@ async def _apply_patch(
     )
     await message.answer(
         f"Исправил!\n\n{response}",
-        reply_markup=meal_result_kb(new_meals[0].id, show_clarify=False),
+        reply_markup=meal_result_kb(new_meals[0].id),
     )
 
 
@@ -629,40 +625,24 @@ async def meal_confirm_callback(
 
     await confirm_meal(meal, db)
 
-    # Build rating block (rule-based, instant)
-    agg = await get_today_aggregate(user.id, db)
-    rating = build_short_rating(
-        meal_calories=meal.calories,
-        meal_protein=meal.protein_g,
-        meal_fat=meal.fat_g,
-        meal_carbs=meal.carbs_g,
-        agg=agg,
-        user=user,
-    )
+    # Remove keyboard from the meal card — it stays clean
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
     # Maybe get a periodic tip (increments counter, no extra LLM call)
     tip = await maybe_get_tip(user, db)
 
-    if rating or tip:
-        # Append rating + tip to the original message
-        extra_parts: list[str] = []
-        if rating:
-            extra_parts.append(rating)
-        if tip:
-            # Show tip as-is with its category emoji (e.g. "💧 Стакан воды...")
-            extra_parts.append(tip)
+    # Build confirmation message (separate from meal card)
+    confirm_parts = ["Записано ✅"]
+    if tip:
+        confirm_parts.append(f"\n{tip}")
 
-        suffix = "\n\n" + "\n\n".join(extra_parts)
-        try:
-            current_text = callback.message.text or callback.message.caption or ""
-            new_text = current_text + suffix
-            kb = meal_detail_kb(meal_id) if rating else None
-            await callback.message.edit_text(new_text, reply_markup=kb)
-        except Exception:
-            # If edit fails (e.g. message too old or unchanged), just remove keyboard
-            await callback.message.edit_reply_markup(reply_markup=None)
-    else:
-        await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        "\n".join(confirm_parts),
+        reply_markup=meal_confirm_kb(meal_id),
+    )
 
 
 # ── 🎯 Detailed meal assessment (LLM nutritionist) ────────────────────────────
@@ -680,8 +660,11 @@ async def meal_detail_callback(
         await callback.message.edit_reply_markup(reply_markup=None)
         return
 
-    # Remove "🎯 Подробнее" button while loading
-    await callback.message.edit_reply_markup(reply_markup=None)
+    # Remove button immediately so user can't tap twice
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
     agg = await get_today_aggregate(user.id, db)
 
@@ -715,7 +698,6 @@ async def meal_detail_callback(
         system_prompt = prompt_path.read_text(encoding="utf-8").strip()
 
         from bot.ai.factory import _openai_client
-        from config import settings
         client = _openai_client()
         response = await client.chat.completions.create(
             model=settings.text_model_name,
@@ -724,14 +706,14 @@ async def meal_detail_callback(
                 {"role": "user", "content": user_context},
             ],
             temperature=0.3,
-            max_tokens=512,
+            max_tokens=300,
         )
         detail_text = response.choices[0].message.content.strip()
-        await callback.message.answer(f"📊 Оценка приёма пищи\n\n{detail_text}")
+        await callback.message.answer(detail_text)
     except Exception as exc:
         logger.error("meal_detail_failed", error=str(exc), meal_id=meal_id)
         await callback.message.answer(
-            "Не удалось получить подробную оценку — попробуй позже."
+            "Не удалось получить оценку — попробуй позже."
         )
 
 
@@ -750,25 +732,12 @@ async def meal_fix_callback(
     await state.update_data(patch_meal_id=meal_id)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(
-        "Что именно исправить? Напиши свободным текстом — "
-        "например «сырники не 220, а 150г», «убери кофе» или «добавь ложку сметаны».\n\n"
+        "Напиши или продиктуй, что изменить:\n"
+        "· вес, состав, способ готовки\n"
+        "· убрать или добавить продукт\n\n"
+        "Например: «убери масло» или «добавь ещё салями 40г»\n\n"
         "/cancel — отменить."
     )
-
-
-# ── 🔍 Уточнить (soft clarification, same patch mode) ─────────────────────────
-
-@router.callback_query(F.data.startswith("meal_clarify:"))
-async def meal_clarify_callback(
-    callback: CallbackQuery,
-    user: User,
-    state: FSMContext,
-) -> None:
-    await callback.answer()
-    meal_id = int(callback.data.split(":")[1])
-
-    await state.set_state(MealStates.awaiting_patch)
-    await state.update_data(patch_meal_id=meal_id)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(
         "Хочешь уточнить? Напиши — например:\n"

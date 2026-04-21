@@ -424,7 +424,7 @@ async def _run_retro_pipeline(
     retro_label = f"📅 Записано за {date_str}\n\n"
     await message.answer(
         retro_label + response,
-        reply_markup=meal_result_kb(meal.id, show_clarify=False, show_augment=False),
+        reply_markup=meal_result_kb(meal.id),
     )
     logger.bind(telegram_id=user.telegram_id).info(
         "retro_meal_saved",
