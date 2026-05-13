@@ -49,6 +49,8 @@ _BOT_COMMANDS = [
     BotCommand(command="profile", description="Мой профиль и цели"),
     BotCommand(command="help",    description="Помощь"),
     BotCommand(command="start",   description="Перезапустить бота"),
+    BotCommand(command="retry",   description="Повторить анализ последнего фото"),
+    BotCommand(command="cancel",  description="Отменить текущее действие"),
 ]
 
 

@@ -63,18 +63,57 @@ def _recent_tip_ids(user: User) -> set[int]:
     return recent
 
 
+_TIP_CATEGORY: dict[int, str] = {t["id"]: t.get("category", "") for t in _TIPS}
+
+
+def _is_tip_allowed_at_hour(tip_id: int, hour: int) -> bool:
+    """Return False if this tip's category is time-restricted and the hour is wrong."""
+    category = _TIP_CATEGORY.get(tip_id, "")
+    if category == "sleep" and hour < 19:
+        return False
+    if category == "movement" and hour >= 22:
+        return False
+    return True
+
+
 def _pick_tip(user: User) -> tuple[int, str] | None:
     """Pick a random tip not shown in the last _DEDUP_DAYS.
 
+    Respects time-based category restrictions (sleep: evening only, movement: not late night).
     Returns (tip_id, display_string) or None if pool is empty.
     """
     if not _TIP_IDS:
         return None
+
+    try:
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo(user.timezone or "Europe/Moscow")
+    except Exception:
+        tz = None
+
+    if tz is not None:
+        current_hour = datetime.now(tz).hour
+    else:
+        current_hour = datetime.now(timezone.utc).hour
+
     recent = _recent_tip_ids(user)
-    available = [tid for tid in _TIP_IDS if tid not in recent]
+    available = [
+        tid for tid in _TIP_IDS
+        if tid not in recent and _is_tip_allowed_at_hour(tid, current_hour)
+    ]
     if not available:
-        # All tips shown recently — reset and pick any
-        available = _TIP_IDS
+        # Fall back to ignoring recency (but keep time filter)
+        available = [
+            tid for tid in _TIP_IDS
+            if _is_tip_allowed_at_hour(tid, current_hour)
+        ]
+    if not available:
+        # All time-restricted at this hour — pick from any non-time-restricted tip
+        available = [
+            tid for tid in _TIP_IDS
+            if _TIP_CATEGORY.get(tid, "") not in ("sleep", "movement")
+        ] or _TIP_IDS
+
     tip_id = random.choice(available)
     display = _TIP_DISPLAY.get(tip_id)
     if display is None:

@@ -48,6 +48,7 @@ class BatchMessage:
     # Photo
     image_bytes: bytes | None = None
     mime_type: str = "image/jpeg"
+    caption: str | None = None  # user's text hint alongside the photo
 
     # Text or voice transcript
     text: str | None = None
@@ -136,7 +137,10 @@ class OpenAIBatchProvider:
                 "сразу" if msg.delay_seconds < 1 else f"через {msg.delay_seconds:.0f} сек"
             )
             if msg.kind == "photo":
-                lines.append(f"{i}. [ФОТО] ({delay_str})")
+                if msg.caption:
+                    lines.append(f"{i}. [ФОТО с подписью пользователя, {delay_str}]: «{msg.caption}»")
+                else:
+                    lines.append(f"{i}. [ФОТО] ({delay_str})")
             elif msg.kind == "voice_transcript":
                 lines.append(f"{i}. [ГОЛОС, транскрипт, {delay_str}]: «{msg.text}»")
             else:
@@ -158,6 +162,16 @@ class OpenAIBatchProvider:
             1 for m in messages if m.kind == "photo"
         ))
 
+        _response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "meal_batch_analysis",
+                "strict": True,
+                "schema": _BATCH_SCHEMA,
+            },
+        }
+
+        raw: str | None = None
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
@@ -165,14 +179,7 @@ class OpenAIBatchProvider:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "meal_batch_analysis",
-                        "strict": True,
-                        "schema": _BATCH_SCHEMA,
-                    },
-                },
+                response_format=_response_format,
                 temperature=0.2,
                 max_tokens=2048,
             )
@@ -193,8 +200,45 @@ class OpenAIBatchProvider:
             return results
 
         except (json.JSONDecodeError, ValidationError) as exc:
-            log.error("batch_parse_error", error=str(exc))
+            log.error(
+                "batch_parse_error",
+                error=str(exc),
+                raw_preview=raw[:500] if raw else None,
+            )
+            # Automatic retry — ask model to return strict JSON
+            retry_raw: str | None = None
+            try:
+                retry_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ]
+                if raw is not None:
+                    retry_messages.append({"role": "assistant", "content": raw})
+                retry_messages.append({
+                    "role": "user",
+                    "content": "Верни ответ строго в формате JSON. Никакого дополнительного текста.",
+                })
+                retry_response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=retry_messages,
+                    response_format=_response_format,
+                    temperature=0.1,
+                    max_tokens=2048,
+                )
+                retry_raw = retry_response.choices[0].message.content
+                log.info("batch_parse_retry_success", preview=retry_raw[:300])
+                data = json.loads(retry_raw)
+                results = [MealAnalysisResult.model_validate(m) for m in data.get("meals", [])]
+                if results:
+                    return results
+            except Exception as retry_exc:
+                log.error(
+                    "batch_parse_retry_failed",
+                    error=str(retry_exc),
+                    retry_raw_preview=retry_raw[:500] if retry_raw else None,
+                )
             return [_fallback_clarification()]
+
         except Exception as exc:
             log.error("batch_provider_error", error=str(exc))
             raise

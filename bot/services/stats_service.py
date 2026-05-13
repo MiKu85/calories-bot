@@ -141,8 +141,8 @@ def format_meal_result(
     # Daily progress
     if user.targets_set and user.daily_calories_target:
         lines.append(
-            f"<b>Сегодня:</b> {int(agg.total_calories)} ккал"
-            f" из {int(user.daily_calories_target)}"
+            f"<b>Сегодня:</b> {int(agg.total_calories)} ккал из {int(user.daily_calories_target)}"
+            f" · Б {agg.total_protein_g:.0f}г · Ж {agg.total_fat_g:.0f}г · У {agg.total_carbs_g:.0f}г"
         )
         cal_str = _remaining_str(agg.total_calories, user.daily_calories_target, "ккал")
         prot_str = _macro_remaining("Б", agg.total_protein_g, user.daily_protein_g_target)

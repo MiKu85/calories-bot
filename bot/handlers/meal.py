@@ -30,8 +30,8 @@ Duplicate detection (Task 5):
 from __future__ import annotations
 
 import structlog
-from aiogram import F, Router
-from aiogram.filters import StateFilter
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -179,10 +179,15 @@ async def run_meal_pipeline(
     input_type: MealInputType,
     user: User,
     db: AsyncSession,
+    *,
+    force_commit: bool = False,
 ) -> None:
     """
     Text-based meal pipeline: analyze → clarify or save+reply.
     Reused by both text and voice handlers.
+
+    force_commit=True: if LLM still returns needs_clarification despite force-commit
+    instructions, save with low confidence instead of asking another question.
     """
     log = logger.bind(
         telegram_id=user.telegram_id,
@@ -201,13 +206,36 @@ async def run_meal_pipeline(
         return
 
     if result.needs_clarification:
-        clarification = result.clarification_prompt or (
-            "Не совсем понял. Опиши подробнее — что именно ел(а) и примерный объём?"
-        )
-        if result.confidence_notes:
-            clarification = f"{clarification}\n\n<i>Причина: {result.confidence_notes}</i>"
-        await message.answer(clarification)
-        return
+        if force_commit:
+            if result.items:
+                # Save with low confidence — stop the loop
+                log.warning("force_commit_override_clarification", items=len(result.items))
+                result = MealAnalysisResult(
+                    items=result.items,
+                    total_calories=result.total_calories,
+                    total_protein_g=result.total_protein_g,
+                    total_fat_g=result.total_fat_g,
+                    total_carbs_g=result.total_carbs_g,
+                    confidence=ConfidenceLevel.low,
+                    confidence_notes="Записано с наилучшей оценкой",
+                    needs_clarification=False,
+                    clarification_prompt=None,
+                )
+            else:
+                log.warning("force_commit_no_items_fallback")
+                await message.answer(
+                    "Не удалось распознать приём. Попробуй описать заново — "
+                    "можно текстом, голосом или сфотографировать."
+                )
+                return
+        else:
+            clarification = result.clarification_prompt or (
+                "Не совсем понял. Опиши подробнее — что именно ел(а) и примерный объём?"
+            )
+            if result.confidence_notes:
+                clarification = f"{clarification}\n\n<i>Причина: {result.confidence_notes}</i>"
+            await message.answer(clarification)
+            return
 
     await save_and_reply_meal(
         message=message,
@@ -306,7 +334,8 @@ async def _handle_clarification_answer(
     combined = "\n\n".join(parts)
 
     # If we've exhausted rounds, instruct the LLM to commit without asking again
-    if rounds >= settings.max_clarification_rounds:
+    force_commit = rounds >= settings.max_clarification_rounds
+    if force_commit:
         combined += (
             "\n\nВАЖНО: Это уже уточнённый ввод. "
             "Запиши приём пищи с наилучшей оценкой на основе всей информации выше. "
@@ -319,10 +348,18 @@ async def _handle_clarification_answer(
         input_type=MealInputType.text,
         user=user,
         db=db,
+        force_commit=force_commit,
     )
 
 
 # ── Text meal handler (normal + legacy correction state) ──────────────────────
+
+_RETRY_PHRASES = {
+    "посчитай", "считай", "посчитать", "обработай", "обработать",
+    "анализируй", "проанализируй", "пересчитай", "давай", "ну давай",
+    "retry", "повтори", "повторить",
+}
+
 
 @router.message(
     OnboardingCompleted(),
@@ -332,11 +369,44 @@ async def _handle_clarification_answer(
 async def handle_text_meal(
     message: Message,
     user: User,
+    bot: Bot,
     state: FSMContext,
 ) -> None:
-    await state.clear()
-
     text = message.text.strip()
+
+    # If message looks like a retry request and we have a saved photo — re-process it
+    if text.lower().rstrip("!.") in _RETRY_PHRASES:
+        data = await state.get_data()
+        file_id = data.get("last_photo_file_id")
+        if file_id:
+            caption = data.get("last_photo_caption")
+            await state.clear()
+            try:
+                import io
+                file = await bot.get_file(file_id)
+                buf = io.BytesIO()
+                await bot.download_file(file.file_path, destination=buf)
+                image_bytes = buf.getvalue()
+                buf.close()
+                from bot.services.debounce_service import BufferedMessage, meal_debounce_service
+                await meal_debounce_service.add_message(
+                    telegram_id=user.telegram_id,
+                    chat_id=message.chat.id,
+                    msg=BufferedMessage(
+                        kind="photo",
+                        image_bytes=image_bytes,
+                        mime_type="image/jpeg",
+                        caption=caption,
+                    ),
+                )
+                return
+            except Exception:
+                await message.answer(
+                    "Не могу найти то фото — пришли его ещё раз, пожалуйста."
+                )
+                return
+
+    await state.clear()
 
     # Check for retro date markers (вчера / позавчера) — redirect if found
     from bot.handlers.retro import maybe_redirect_to_retro
@@ -508,6 +578,7 @@ async def _apply_patch(
     OnboardingCompleted(),
     StateFilter(MealStates.awaiting_patch),
     F.text,
+    ~F.text.startswith("/"),
 )
 async def handle_patch_text(
     message: Message,
@@ -515,6 +586,14 @@ async def handle_patch_text(
     state: FSMContext,
     db: AsyncSession,
 ) -> None:
+    text = message.text.strip()
+
+    # "Нет" / "не" / "ничего" в patch mode — пользователь хочет выйти
+    if text.lower() in {"нет", "не", "ничего", "ничего не менять", "всё верно", "все верно", "no", "n"}:
+        await state.clear()
+        await message.answer("Хорошо, ничего не меняю. Приём сохранён как есть.")
+        return
+
     data = await state.get_data()
     meal_id = data.get("patch_meal_id")
     if not meal_id:
@@ -522,7 +601,7 @@ async def handle_patch_text(
         await message.answer("Что-то пошло не так. Попробуй описать приём заново.")
         return
     await _apply_patch(
-        correction_text=message.text.strip(),
+        correction_text=text,
         meal_id=meal_id,
         user=user,
         message=message,
@@ -595,6 +674,61 @@ async def handle_patch_voice(
         state=state,
         db=db,
     )
+
+
+# ── /retry — re-process last photo ───────────────────────────────────────────
+
+@router.message(OnboardingCompleted(), Command("retry"))
+async def handle_retry(
+    message: Message,
+    user: User,
+    bot: Bot,
+    state: FSMContext,
+) -> None:
+    data = await state.get_data()
+    file_id = data.get("last_photo_file_id")
+    if not file_id:
+        await message.answer("Нет сохранённого фото для повтора. Пришли фото заново.")
+        return
+
+    caption = data.get("last_photo_caption")
+    await state.clear()
+
+    try:
+        file = await bot.get_file(file_id)
+        import io
+        buf = io.BytesIO()
+        await bot.download_file(file.file_path, destination=buf)
+        image_bytes = buf.getvalue()
+        buf.close()
+    except Exception:
+        await message.answer("Не удалось загрузить фото — возможно, оно устарело. Пришли заново.")
+        return
+
+    from bot.services.debounce_service import BufferedMessage, meal_debounce_service
+    await meal_debounce_service.add_message(
+        telegram_id=user.telegram_id,
+        chat_id=message.chat.id,
+        msg=BufferedMessage(
+            kind="photo",
+            image_bytes=image_bytes,
+            mime_type="image/jpeg",
+            caption=caption,
+        ),
+    )
+    await message.answer("Анализирую фото ещё раз…")
+
+
+# ── /cancel — universal state clear ──────────────────────────────────────────
+
+@router.message(Command("cancel"))
+async def handle_cancel(message: Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    await state.clear()
+    if current:
+        await message.answer("Отменено.")
+    else:
+        await message.answer("Нечего отменять.")
 
 
 # ── Patch mode: non-text message guard ────────────────────────────────────────
@@ -680,16 +814,36 @@ async def meal_detail_callback(
         )
     items_text = "\n".join(items_lines) if items_lines else f"Итого: {int(meal.calories)} ккал"
 
+    t_kcal = user.daily_calories_target or 0
+    t_prot = user.daily_protein_g_target or 0
+    t_fat = user.daily_fat_g_target or 0
+    t_carbs = user.daily_carbs_g_target or 0
+
+    c_kcal = agg.total_calories
+    c_prot = agg.total_protein_g
+    c_fat = agg.total_fat_g
+    c_carbs = agg.total_carbs_g
+
+    def _pct(val: float, target: float) -> str:
+        return f"{int(val / target * 100)}%" if target > 0 else "—"
+
+    rem_kcal = t_kcal - c_kcal
+    rem_prot = t_prot - c_prot
+    rem_fat = t_fat - c_fat
+    rem_carbs = t_carbs - c_carbs
+
+    meal_pct = f"{int(meal.calories / t_kcal * 100)}%" if t_kcal > 0 else "—"
+
     user_context = (
-        f"Приём пищи:\n{items_text}\n\n"
-        f"Итого приёма: {int(meal.calories)} ккал, "
+        f"ДАННЫЕ ПРИЁМА:\n{items_text}\n\n"
+        f"Итого приёма: {int(meal.calories)} ккал ({meal_pct} от дневной цели), "
         f"Б {meal.protein_g:.0f}г, Ж {meal.fat_g:.0f}г, У {meal.carbs_g:.0f}г\n\n"
-        f"Дневной итог после этого приёма: {int(agg.total_calories)} ккал, "
-        f"Б {agg.total_protein_g:.0f}г, Ж {agg.total_fat_g:.0f}г, У {agg.total_carbs_g:.0f}г\n\n"
-        f"Цели пользователя: {int(user.daily_calories_target or 0)} ккал, "
-        f"Б {user.daily_protein_g_target or 0:.0f}г, "
-        f"Ж {user.daily_fat_g_target or 0:.0f}г, "
-        f"У {user.daily_carbs_g_target or 0:.0f}г"
+        f"ДНЕВНЫЕ ДАННЫЕ (после этого приёма):\n"
+        f"Съедено: {int(c_kcal)} ккал из {int(t_kcal)} ({_pct(c_kcal, t_kcal)})\n"
+        f"Б: {c_prot:.0f}г из {t_prot:.0f}г ({_pct(c_prot, t_prot)}) · "
+        f"Ж: {c_fat:.0f}г из {t_fat:.0f}г ({_pct(c_fat, t_fat)}) · "
+        f"У: {c_carbs:.0f}г из {t_carbs:.0f}г ({_pct(c_carbs, t_carbs)})\n"
+        f"Осталось: {int(rem_kcal)} ккал · Б {rem_prot:.0f}г · Ж {rem_fat:.0f}г · У {rem_carbs:.0f}г"
     )
 
     try:
@@ -732,18 +886,11 @@ async def meal_fix_callback(
     await state.update_data(patch_meal_id=meal_id)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(
-        "Напиши или продиктуй, что изменить:\n"
-        "· вес, состав, способ готовки\n"
-        "· убрать или добавить продукт\n\n"
-        "Например: «убери масло» или «добавь ещё салями 40г»\n\n"
-        "/cancel — отменить."
-    )
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(
-        "Хочешь уточнить? Напиши — например:\n"
-        "· «блюдо было большое, граммов 300»\n"
-        "· «там был соус, примерно столовая ложка»\n"
-        "· «готовила на сковороде с маслом»\n\n"
+        "Что именно исправить? Напиши свободным текстом — например:\n"
+        "· «сырники не 220, а 150г»\n"
+        "· «убери кофе»\n"
+        "· «добавь ложку сметаны»\n"
+        "· «исправь весь приём» + новый состав\n\n"
         "/cancel — отменить."
     )
 
@@ -760,6 +907,22 @@ async def meal_stats_callback(
 
 
 # ── Duplicate detection callbacks ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("meal_delete:"))
+async def meal_delete_callback(
+    callback: CallbackQuery, user: User, db: AsyncSession
+) -> None:
+    await callback.answer("Удалено 🗑")
+    meal_id = int(callback.data.split(":")[1])
+    meal = await get_meal_by_id(meal_id, db)
+    if meal and meal.user_id == user.id and not meal.is_deleted:
+        await delete_meal(meal, db)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer("Приём удалён.")
+
 
 @router.callback_query(F.data.startswith("dedup_ok:"))
 async def dedup_ok_callback(callback: CallbackQuery) -> None:

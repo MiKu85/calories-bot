@@ -31,13 +31,14 @@ def meal_result_kb(
             callback_data=f"meal_merge:{prev_meal_id}:{meal_id}",
         )
 
-    # Day stats always last
+    # Row 2: delete + stats
+    builder.button(text="🗑 Удалить", callback_data=f"meal_delete:{meal_id}")
     builder.button(text="📈 Мой день", callback_data="meal_stats")
 
     rows = [2]
     if prev_meal_id is not None:
         rows.append(1)
-    rows.append(1)  # stats
+    rows.append(2)  # delete + stats
 
     builder.adjust(*rows)
     return builder.as_markup()

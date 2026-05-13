@@ -1,40 +1,22 @@
-# Environment
+# Secrets
 .env
-.env.local
+*.env
 
 # Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-dist/
-build/
-.eggs/
-.venv/
 venv/
-env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
 
-# Alembic
-# Note: migration files ARE committed — they are the source of truth for DB schema
-
-# Logs
+# Logs & temp
 *.log
-logs/
+*.tmp
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# DB files
+*.db
+*.sqlite3
 
 # OS
 .DS_Store
-Thumbs.db
-
-# Claude Code
-.claude/
-
-# Temp food photos (never store permanently)
-/tmp_photos/

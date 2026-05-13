@@ -103,7 +103,8 @@ async def update_meal(
     meal.fat_g = totals["fat_g"]
     meal.carbs_g = totals["carbs_g"]
     await db.flush()
-    await recalculate_daily_aggregate(meal.user_id, _today_utc(), db)
+    meal_date = meal.logged_at.date() if meal.logged_at.tzinfo else _today_utc()
+    await recalculate_daily_aggregate(meal.user_id, meal_date, db)
 
 
 async def confirm_meal(meal: Meal, db: AsyncSession) -> None:
@@ -115,7 +116,8 @@ async def delete_meal(meal: Meal, db: AsyncSession) -> None:
     meal.is_deleted = True
     meal.deleted_at = datetime.now(timezone.utc)
     await db.flush()
-    await recalculate_daily_aggregate(meal.user_id, _today_utc(), db)
+    meal_date = meal.logged_at.date() if meal.logged_at.tzinfo else _today_utc()
+    await recalculate_daily_aggregate(meal.user_id, meal_date, db)
 
 
 class MealSpec:

@@ -36,7 +36,7 @@ router = Router(name="photo")
 
 @router.message(
     OnboardingCompleted(),
-    StateFilter(None, MealStates.awaiting_correction),
+    StateFilter(None, MealStates.awaiting_correction, MealStates.awaiting_patch),
     F.photo,
 )
 async def handle_photo_meal(
@@ -66,6 +66,9 @@ async def handle_photo_meal(
         return
 
     log.info("photo_downloaded_to_buffer", file_size=len(image_bytes), has_caption=bool(caption))
+
+    # Save file_id so /retry can re-download this photo later
+    await state.update_data(last_photo_file_id=photo.file_id, last_photo_caption=caption)
 
     # ── Hand off to debounce service ──────────────────────────────────────────
     # The service starts the typing indicator and the silence timer.

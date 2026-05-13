@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import random
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -53,10 +54,7 @@ logger = structlog.get_logger(__name__)
 router = Router(name="meal_batch")
 
 _MIN_STT_LENGTH = 3
-_PHOTO_DISCLAIMER = (
-    "Оценка по фото — приблизительная. "
-    "Точность зависит от качества снимка и видимости порций."
-)
+_LOADING_EMOJIS = ["🍕", "🍔", "🥗", "🥣", "🥝", "🌮", "🧁", "🩵", "🍱", "🥩", "🍜", "🌾"]
 
 
 # ── Flush callback (called by MealDebounceService) ────────────────────────────
@@ -106,6 +104,7 @@ async def flush_meal_buffer(
                     delay_seconds=delay,
                     image_bytes=msg.image_bytes,
                     mime_type=msg.mime_type,
+                    caption=msg.caption,
                 ))
             elif msg.kind == "voice":
                 transcript = msg.stt_result
@@ -131,19 +130,39 @@ async def flush_meal_buffer(
         log.info("flush_batch_built", types=[b.kind for b in batch])
 
         # ── 4. Call batch LLM ─────────────────────────────────────────────────
+        from bot.services.debounce_service import meal_debounce_service
+        bot = meal_debounce_service._bot  # type: ignore[attr-defined]
+
+        # Send loading indicator; delete it when the result is ready
+        loading_msg_id: int | None = None
+        try:
+            loading_emoji = random.choice(_LOADING_EMOJIS)
+            sent = await bot.send_message(chat_id, loading_emoji)
+            loading_msg_id = sent.message_id
+        except Exception:
+            pass
+
         provider = get_batch_provider()
         try:
             results = await provider.analyze_meal_batch(batch)
         except Exception as exc:
             log.error("batch_llm_failed", error=str(exc))
-            from aiogram import Bot as _Bot
-            from bot.services.debounce_service import meal_debounce_service
-            bot: _Bot = meal_debounce_service._bot  # type: ignore[attr-defined]
+            if loading_msg_id is not None:
+                try:
+                    await bot.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
             await bot.send_message(
                 chat_id,
                 "Не смог обработать запрос — попробуй ещё раз или опиши приём заново.",
             )
             return
+
+        if loading_msg_id is not None:
+            try:
+                await bot.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
 
         log.info(
             "flush_llm_done",
@@ -173,9 +192,6 @@ async def flush_meal_buffer(
         )
 
         # ── 6. Save and reply for each meal ───────────────────────────────────
-        from bot.services.debounce_service import meal_debounce_service
-        bot = meal_debounce_service._bot  # type: ignore[attr-defined]
-
         multi = len(results) > 1
         saved_meal_ids: list[int] = []
 
@@ -216,15 +232,6 @@ async def flush_meal_buffer(
                 await bot.send_message(chat_id, prompt, parse_mode="HTML")
                 continue
 
-            if has_photo:
-                note = {
-                    ConfidenceLevel.medium: "Оценка приблизительная — порция может отличаться.",
-                    ConfidenceLevel.low: "Уверенность низкая — данные очень ориентировочные.",
-                }.get(result.confidence)
-                parts = [_PHOTO_DISCLAIMER]
-                if note:
-                    parts.append(note)
-                disclaimer = " ".join(parts)
 
             meal = await save_meal(
                 user=user,
