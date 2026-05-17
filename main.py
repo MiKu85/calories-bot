@@ -48,7 +48,7 @@ _BOT_COMMANDS = [
     BotCommand(command="retro",   description="Записать приём за вчера или позавчера"),
     BotCommand(command="profile", description="Мой профиль и цели"),
     BotCommand(command="help",    description="Помощь"),
-    BotCommand(command="start",   description="Перезапустить бота"),
+    BotCommand(command="start",   description="Если зависло (данные сохраняются)"),
     BotCommand(command="retry",   description="Повторить анализ последнего фото"),
     BotCommand(command="cancel",  description="Отменить текущее действие"),
 ]
