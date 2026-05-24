@@ -17,6 +17,7 @@ from bot.db.session import AsyncSessionLocal
 from bot.handlers.admin import router as admin_router
 from bot.handlers.errors import router as errors_router
 from bot.handlers.feedback import router as feedback_router
+from bot.handlers.goals import router as goals_router
 from bot.handlers.help import router as help_router
 from bot.handlers.meal import router as meal_router
 from bot.handlers.meal_batch import flush_meal_buffer, router as meal_batch_router
@@ -46,6 +47,7 @@ _BOT_COMMANDS = [
     BotCommand(command="stats",   description="Статистика за сегодня"),
     BotCommand(command="export",  description="Выгрузить дневник за неделю"),
     BotCommand(command="retro",   description="Записать приём за вчера или позавчера"),
+    BotCommand(command="goals",   description="Мои цели по КБЖУ"),
     BotCommand(command="profile", description="Мой профиль и цели"),
     BotCommand(command="help",    description="Помощь"),
     BotCommand(command="start",   description="Если зависло (данные сохраняются)"),
@@ -83,6 +85,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(reset_router)
     dp.include_router(stats_router)
     dp.include_router(retro_router)      # retro input — before meal catch-all
+    dp.include_router(goals_router)
     dp.include_router(help_router)
     dp.include_router(admin_router)
     dp.include_router(feedback_router)   # before voice/meal: intercepts FSM states

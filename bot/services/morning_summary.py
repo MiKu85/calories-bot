@@ -172,6 +172,19 @@ def detect_trend(
 
 # ── Message builder ────────────────────────────────────────────────────────────
 
+def build_goals_reminder(targets: UserTargets) -> str:
+    """One-liner with today's KBJU goals and a hint to change them."""
+    if targets.calories <= 0:
+        return ""
+    return (
+        f"Ваши цели: {int(targets.calories)} ккал · "
+        f"Б {int(targets.protein_g)}г · "
+        f"Ж {int(targets.fat_g)}г · "
+        f"У {int(targets.carbs_g)}г\n"
+        "Изменить: /goals"
+    )
+
+
 def build_morning_summary(
     name: str,
     yesterday: DayData,
@@ -194,9 +207,18 @@ def build_morning_summary(
     """
     greeting = f"☀️ Доброе утро, {name}!\n\n" if name else "☀️ Доброе утро!\n\n"
 
+    goals_line = ""
+    if targets.calories > 0:
+        goals_line = (
+            f"Сегодня: {int(targets.calories)} ккал · "
+            f"Б {int(targets.protein_g)}г · "
+            f"Ж {int(targets.fat_g)}г · "
+            f"У {int(targets.carbs_g)}г"
+        )
+
     # Fallback: nothing meaningful logged
     if yesterday.calories < 300 or yesterday.meals_count == 0:
-        fallback = greeting + _FALLBACK_NO_DATA
+        fallback = greeting + (goals_line + "\n\n" if goals_line else "") + _FALLBACK_NO_DATA
         if tip:
             _, _, tip_body = tip.partition(" ")
             fallback += f"\n\n💡 {tip_body or tip}"
@@ -246,7 +268,7 @@ def build_morning_summary(
             break
 
     # Assemble sections separated by blank lines
-    sections = [opening, stats_block]
+    sections = ([goals_line] if goals_line else []) + [opening, stats_block]
     if trend_line:
         sections.append(trend_line)
     if rec:

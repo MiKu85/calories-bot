@@ -195,17 +195,16 @@ def build_weekly_message(
             return " — немного много"
         return " — ✅ в норме"
 
-    prot_status = _status(summary.avg_protein_g, target_protein_g)
-    fat_status = _status(summary.avg_fat_g, target_fat_g)
-    carbs_status = _status(summary.avg_carbs_g, target_carbs_g)
-
     cal_target_str = f" (цель: {int(target_calories)})" if target_calories > 0 else ""
+    prot_target_str = f" (цель: {int(target_protein_g)}г)" if target_protein_g > 0 else ""
+    fat_target_str = f" (цель: {int(target_fat_g)}г)" if target_fat_g > 0 else ""
+    carbs_target_str = f" (цель: {int(target_carbs_g)}г)" if target_carbs_g > 0 else ""
     stats = (
         f"Записано дней: {summary.days_logged} из 7\n"
         f"Среднее за день: {int(summary.avg_calories)} ккал{cal_target_str}\n"
-        f"Белки: в среднем {int(summary.avg_protein_g)}г/день{prot_status}\n"
-        f"Жиры: в среднем {int(summary.avg_fat_g)}г/день{fat_status}\n"
-        f"Углеводы: в среднем {int(summary.avg_carbs_g)}г/день{carbs_status}"
+        f"Белки: {int(summary.avg_protein_g)}г/день{prot_target_str}\n"
+        f"Жиры: {int(summary.avg_fat_g)}г/день{fat_target_str}\n"
+        f"Углеводы: {int(summary.avg_carbs_g)}г/день{carbs_target_str}"
     )
 
     # Day-by-day dynamics (compact one-liner)
