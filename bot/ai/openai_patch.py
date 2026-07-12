@@ -143,11 +143,19 @@ class OpenAIPatchProvider:
                     },
                 },
                 temperature=0.1,
-                max_tokens=1024,
+                # Патч возвращает ВЕСЬ список позиций заново — для больших приёмов
+                # (10+ позиций) 1024 токенов не хватало и JSON обрывался. 4096 с запасом.
+                max_tokens=4096,
             )
 
-            raw = response.choices[0].message.content
-            log.debug("meal_patch_raw_response", raw=raw)
+            choice = response.choices[0]
+            raw = choice.message.content
+            log.debug("meal_patch_raw_response", raw=raw, finish_reason=choice.finish_reason)
+            if choice.finish_reason == "length":
+                # Ответ обрезан по лимиту токенов — JSON заведомо битый, не вводим в
+                # заблуждение «напиши иначе» (формулировка-то верная).
+                log.error("meal_patch_truncated", chars=len(raw or ""))
+                return _fallback_truncated()
             data = json.loads(raw)
             result = MealPatchResult.model_validate(data)
             log.info(
@@ -169,6 +177,21 @@ def _fallback_not_understood() -> MealPatchResult:
     return MealPatchResult(
         understood=False,
         clarification_prompt="Не смог применить правку. Попробуй написать иначе — например «сырники не 220, а 150г».",
+        items=[],
+        total_calories=0,
+        total_protein_g=0,
+        total_fat_g=0,
+        total_carbs_g=0,
+    )
+
+
+def _fallback_truncated() -> MealPatchResult:
+    return MealPatchResult(
+        understood=False,
+        clarification_prompt=(
+            "Приём большой — не получилось применить правку целиком за раз. "
+            "Уточни короче, по одной позиции — например «убери кофе» или «добавь 50г хумуса»."
+        ),
         items=[],
         total_calories=0,
         total_protein_g=0,

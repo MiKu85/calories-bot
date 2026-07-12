@@ -100,7 +100,7 @@ class OpenAITextProvider:
                     },
                 },
                 temperature=0.2,
-                max_tokens=1024,
+                max_tokens=2048,  # большие приёмы (много позиций) не должны обрезаться
             )
 
             raw = response.choices[0].message.content
