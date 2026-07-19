@@ -26,6 +26,7 @@ from bot.handlers.photo import router as photo_router
 from bot.handlers.profile import router as profile_router
 from bot.handlers.reset import router as reset_router
 from bot.handlers.retro import router as retro_router
+from bot.handlers.saved_meals import router as saved_meals_router
 from bot.handlers.start import router as start_router
 from bot.handlers.stats import router as stats_router
 from bot.handlers.voice import router as voice_router
@@ -45,6 +46,7 @@ logger = structlog.get_logger(__name__)
 
 _BOT_COMMANDS = [
     BotCommand(command="stats",   description="Статистика за сегодня"),
+    BotCommand(command="meals",   description="Мои блюда — сохранённые приёмы"),
     BotCommand(command="export",  description="Выгрузить дневник за неделю"),
     BotCommand(command="retro",   description="Записать приём за вчера или позавчера"),
     BotCommand(command="goals",   description="Мои цели по КБЖУ"),
@@ -89,6 +91,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(help_router)
     dp.include_router(admin_router)
     dp.include_router(feedback_router)   # before voice/meal: intercepts FSM states
+    dp.include_router(saved_meals_router) # /meals + saved-template callbacks; name FSM before meal catch-all
     dp.include_router(meal_batch_router) # augment/merge callbacks + awaiting_augment state
     dp.include_router(voice_router)      # F.voice — before meal catch-all
     dp.include_router(photo_router)      # F.photo — before meal catch-all

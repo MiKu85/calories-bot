@@ -35,10 +35,15 @@ def meal_result_kb(
     builder.button(text="🗑 Удалить", callback_data=f"meal_delete:{meal_id}")
     builder.button(text="📈 Мой день", callback_data="meal_stats")
 
+    # Row 3: save as reusable template («Мои блюда»). Available before and after
+    # a correction, so a fixed-up meal (e.g. protein shake) can be saved accurately.
+    builder.button(text="💾 В мои блюда", callback_data=f"meal_save_tpl:{meal_id}")
+
     rows = [2]
     if prev_meal_id is not None:
         rows.append(1)
     rows.append(2)  # delete + stats
+    rows.append(1)  # save as template
 
     builder.adjust(*rows)
     return builder.as_markup()

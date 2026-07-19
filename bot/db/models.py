@@ -63,6 +63,7 @@ class MealInputType(str, enum.Enum):
     text = "text"
     voice = "voice"
     photo = "photo"
+    saved = "saved"          # added from a user-saved meal template («Мои блюда»)
 
 
 class MealType(str, enum.Enum):
@@ -202,6 +203,46 @@ class Meal(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="meals")
+
+
+class SavedMeal(Base):
+    """
+    Сохранённый шаблон блюда («Мои блюда»).
+
+    Заводится из уже посчитанного приёма (кнопка «💾 В мои блюда»), чтобы
+    повторяющуюся еду — протеиновый коктейль, стандартный завтрак — не
+    переописывать и не фотографировать каждый раз. Выбор из списка добавляет
+    готовые КБЖУ в дневник без обращения к LLM. Точность фиксируется штатной
+    правкой приёма («🔧 Исправить») ДО сохранения.
+    """
+    __tablename__ = "saved_meals"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_saved_meal_user_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    calories: Mapped[float] = mapped_column(Float, nullable=False)
+    protein_g: Mapped[float] = mapped_column(Float, nullable=False)
+    fat_g: Mapped[float] = mapped_column(Float, nullable=False)
+    carbs_g: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Same shape as Meal.meal_items: [{name, portion_description, calories, protein_g, fat_g, carbs_g}]
+    meal_items: Mapped[list | None] = mapped_column(JSON)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    user: Mapped[User] = relationship("User")
 
 
 class DailyAggregate(Base):
