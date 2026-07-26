@@ -33,6 +33,7 @@ async def apply_targets(user: User, db: AsyncSession) -> UserTargets:
     user.daily_protein_g_target = targets.daily_protein_g
     user.daily_fat_g_target = targets.daily_fat_g
     user.daily_carbs_g_target = targets.daily_carbs_g
+    user.daily_fiber_g_target = targets.daily_fiber_g
     await db.flush()
     return targets
 
@@ -51,6 +52,7 @@ async def reset_onboarding(user: User, db: AsyncSession) -> None:
     user.daily_protein_g_target = None
     user.daily_fat_g_target = None
     user.daily_carbs_g_target = None
+    user.daily_fiber_g_target = None
     user.onboarding_state = OnboardingState.new
     user.onboarding_completed_at = None
     await db.flush()

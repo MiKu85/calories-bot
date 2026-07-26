@@ -252,6 +252,7 @@ async def flush_meal_buffer(
                 agg=agg,
                 user=user,
                 is_photo=has_photo,
+                meal_fiber=result.total_fiber_g,
             )
             if disclaimer:
                 response = f"<i>{disclaimer}</i>\n\n{response}"
@@ -450,6 +451,7 @@ async def _apply_augment(
             "protein_g": item.protein_g,
             "fat_g": item.fat_g,
             "carbs_g": item.carbs_g,
+            "fiber_g": getattr(item, "fiber_g", 0.0),
         }
         for item in result.items
     ]
@@ -460,6 +462,7 @@ async def _apply_augment(
         "protein_g": meal.protein_g + result.total_protein_g,
         "fat_g": meal.fat_g + result.total_fat_g,
         "carbs_g": meal.carbs_g + result.total_carbs_g,
+        "fiber_g": meal.fiber_g + result.total_fiber_g,
     }
 
     await update_meal(meal, merged_items, totals, db)
@@ -475,6 +478,7 @@ async def _apply_augment(
         meal_items=merged_items,
         agg=agg,
         user=user,
+        meal_fiber=totals["fiber_g"],
     )
     await message.answer(
         f"Добавил!\n\n{response}",
@@ -516,6 +520,7 @@ async def meal_merge_callback(
         "protein_g": prev_meal.protein_g + this_meal.protein_g,
         "fat_g": prev_meal.fat_g + this_meal.fat_g,
         "carbs_g": prev_meal.carbs_g + this_meal.carbs_g,
+        "fiber_g": prev_meal.fiber_g + this_meal.fiber_g,
     }
 
     await update_meal(prev_meal, merged_items, totals, db)
@@ -538,6 +543,7 @@ async def meal_merge_callback(
         meal_items=merged_items,
         agg=agg,
         user=user,
+        meal_fiber=totals["fiber_g"],
     )
     await callback.message.answer(
         f"Объединил в один приём!\n\n{response}",

@@ -64,6 +64,7 @@ async def save_meal(
         protein_g=result.total_protein_g,
         fat_g=result.total_fat_g,
         carbs_g=result.total_carbs_g,
+        fiber_g=result.total_fiber_g,
         confidence=result.confidence,
         confidence_notes=result.confidence_notes,
         meal_items=_items_to_json(result),
@@ -102,6 +103,7 @@ async def update_meal(
     meal.protein_g = totals["protein_g"]
     meal.fat_g = totals["fat_g"]
     meal.carbs_g = totals["carbs_g"]
+    meal.fiber_g = totals.get("fiber_g", 0.0)
     await db.flush()
     meal_date = meal.logged_at.date() if meal.logged_at.tzinfo else _today_utc()
     await recalculate_daily_aggregate(meal.user_id, meal_date, db)
@@ -130,12 +132,14 @@ class MealSpec:
         protein_g: float,
         fat_g: float,
         carbs_g: float,
+        fiber_g: float = 0.0,
     ) -> None:
         self.items = items
         self.calories = calories
         self.protein_g = protein_g
         self.fat_g = fat_g
         self.carbs_g = carbs_g
+        self.fiber_g = fiber_g
 
 
 async def replace_meal(
@@ -165,6 +169,7 @@ async def replace_meal(
             protein_g=spec.protein_g,
             fat_g=spec.fat_g,
             carbs_g=spec.carbs_g,
+            fiber_g=spec.fiber_g,
             confidence=ConfidenceLevel.medium,
             meal_items=spec.items,
             is_confirmed=False,
@@ -234,6 +239,7 @@ async def recalculate_daily_aggregate(
         func.coalesce(func.sum(Meal.protein_g), 0.0).label("prot"),
         func.coalesce(func.sum(Meal.fat_g), 0.0).label("fat"),
         func.coalesce(func.sum(Meal.carbs_g), 0.0).label("carbs"),
+        func.coalesce(func.sum(Meal.fiber_g), 0.0).label("fiber"),
         func.count(Meal.id).label("cnt"),
     ).where(
         Meal.user_id == user_id,
@@ -248,6 +254,7 @@ async def recalculate_daily_aggregate(
     agg.total_protein_g = float(row.prot)
     agg.total_fat_g = float(row.fat)
     agg.total_carbs_g = float(row.carbs)
+    agg.total_fiber_g = float(row.fiber)
     agg.meals_count = int(row.cnt)
     await db.flush()
     return agg
@@ -283,6 +290,7 @@ def _items_to_json(result: MealAnalysisResult) -> list[dict]:
             "protein_g": item.protein_g,
             "fat_g": item.fat_g,
             "carbs_g": item.carbs_g,
+            "fiber_g": getattr(item, "fiber_g", 0.0),
         }
         for item in result.items
     ]

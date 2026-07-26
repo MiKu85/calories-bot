@@ -31,6 +31,17 @@ PROTEIN_PER_KG: dict[Goal, float] = {
 
 FAT_PER_KG = 0.8
 
+# Fiber target is a fixed daily reference by sex (per owner's spec, aligned with
+# common guidance): women 25 g, men 30 g. Not derived from calories — kept simple
+# and never below the WHO 25 g minimum, even on a deficit.
+FIBER_TARGET_FEMALE = 25.0
+FIBER_TARGET_MALE = 30.0
+
+
+def fiber_target_for(sex: Sex | None) -> float:
+    """Daily fiber goal in grams. Defaults to the safe 25 g minimum if sex is unknown."""
+    return FIBER_TARGET_MALE if sex == Sex.male else FIBER_TARGET_FEMALE
+
 
 @dataclass(frozen=True)
 class UserTargets:
@@ -38,6 +49,7 @@ class UserTargets:
     daily_protein_g: float
     daily_fat_g: float
     daily_carbs_g: float
+    daily_fiber_g: float
 
 
 def calculate_bmr(sex: Sex, weight_kg: float, height_cm: float, age: int) -> float:
@@ -69,4 +81,5 @@ def calculate_targets(
         daily_protein_g=round(protein_g, 1),
         daily_fat_g=round(fat_g, 1),
         daily_carbs_g=round(carbs_g, 1),
+        daily_fiber_g=fiber_target_for(sex),
     )

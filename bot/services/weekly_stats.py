@@ -26,6 +26,7 @@ class WeeklyData:
     fat_g: float
     carbs_g: float
     meals_count: int
+    fiber_g: float = 0.0
 
 
 @dataclass
@@ -39,6 +40,7 @@ class WeekSummary:
     avg_carbs_g: float
     daily: list[WeeklyData]     # 7 entries, in order Mon→Sun
     best_day: date | None       # closest to targets, or None
+    avg_fiber_g: float = 0.0
 
 
 _RU_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -72,13 +74,14 @@ def compute_week_summary(
         return WeekSummary(
             start_date=start, end_date=end, days_logged=0,
             avg_calories=0, avg_protein_g=0, avg_fat_g=0, avg_carbs_g=0,
-            daily=week_data, best_day=None,
+            daily=week_data, best_day=None, avg_fiber_g=0,
         )
 
     avg_cal = sum(d.calories for d in logged) / days_logged
     avg_prot = sum(d.protein_g for d in logged) / days_logged
     avg_fat = sum(d.fat_g for d in logged) / days_logged
     avg_carbs = sum(d.carbs_g for d in logged) / days_logged
+    avg_fiber = sum(d.fiber_g for d in logged) / days_logged
 
     # Best day: closest to targets using composite distance
     best_day: date | None = None
@@ -102,6 +105,7 @@ def compute_week_summary(
         avg_carbs_g=avg_carbs,
         daily=week_data,
         best_day=best_day,
+        avg_fiber_g=avg_fiber,
     )
 
 
@@ -163,6 +167,7 @@ def build_weekly_message(
     target_fat_g: float,
     target_carbs_g: float,
     tip: str | None = None,
+    target_fiber_g: float = 0.0,
 ) -> str:
     """
     Build the Monday morning weekly summary as HTML string.
@@ -199,12 +204,14 @@ def build_weekly_message(
     prot_target_str = f" (цель: {int(target_protein_g)}г)" if target_protein_g > 0 else ""
     fat_target_str = f" (цель: {int(target_fat_g)}г)" if target_fat_g > 0 else ""
     carbs_target_str = f" (цель: {int(target_carbs_g)}г)" if target_carbs_g > 0 else ""
+    fiber_target_str = f" (цель: {int(target_fiber_g)}г)" if target_fiber_g > 0 else ""
     stats = (
         f"Записано дней: {summary.days_logged} из 7\n"
         f"Среднее за день: {int(summary.avg_calories)} ккал{cal_target_str}\n"
         f"Белки: {int(summary.avg_protein_g)}г/день{prot_target_str}\n"
         f"Жиры: {int(summary.avg_fat_g)}г/день{fat_target_str}\n"
-        f"Углеводы: {int(summary.avg_carbs_g)}г/день{carbs_target_str}"
+        f"Углеводы: {int(summary.avg_carbs_g)}г/день{carbs_target_str}\n"
+        f"Клетчатка: {int(summary.avg_fiber_g)}г/день{fiber_target_str}"
     )
 
     # Day-by-day dynamics (compact one-liner)
@@ -243,12 +250,13 @@ def build_txt_export(
     target_protein_g: float,
     target_fat_g: float,
     target_carbs_g: float,
+    target_fiber_g: float = 0.0,
 ) -> str:
     """
     Build a plain-text export for the week.
 
     week_meals: {date: list of meal dicts with keys
-                 logged_at, calories, protein_g, fat_g, carbs_g, meal_items}
+                 logged_at, calories, protein_g, fat_g, carbs_g, fiber_g, meal_items}
     week_data: daily aggregates (WeeklyData list)
     """
     _FULL_MONTHS = {
@@ -285,6 +293,7 @@ def build_txt_export(
                 prot = m.get("protein_g", 0)
                 fat = m.get("fat_g", 0)
                 carbs = m.get("carbs_g", 0)
+                fiber = m.get("fiber_g", 0) or 0
 
                 items = m.get("meal_items") or []
                 if items:
@@ -296,14 +305,14 @@ def build_txt_export(
                     prefix = time_str or "Приём"
 
                 lines.append(
-                    f"{prefix} — {cal} ккал · Б {prot:.0f}г · Ж {fat:.0f}г · У {carbs:.0f}г"
+                    f"{prefix} — {cal} ккал · Б {prot:.0f}г · Ж {fat:.0f}г · У {carbs:.0f}г · Клетчатка {fiber:.0f}г"
                 )
 
         daily = agg_by_date.get(current)
         if daily and daily.meals_count > 0:
             lines.append(
                 f"Итого: {int(daily.calories)} ккал · Б {daily.protein_g:.0f}г · "
-                f"Ж {daily.fat_g:.0f}г · У {daily.carbs_g:.0f}г"
+                f"Ж {daily.fat_g:.0f}г · У {daily.carbs_g:.0f}г · Клетчатка {daily.fiber_g:.0f}г"
             )
 
         lines.append("")
@@ -319,6 +328,7 @@ def build_txt_export(
         avg_prot = sum(d.protein_g for d in logged_days) / days_logged
         avg_fat = sum(d.fat_g for d in logged_days) / days_logged
         avg_carbs = sum(d.carbs_g for d in logged_days) / days_logged
+        avg_fiber = sum(d.fiber_g for d in logged_days) / days_logged
         lines.append(f"Записано дней: {days_logged} из 7")
         lines.append(f"Средняя калорийность: {int(avg_cal)} ккал/день")
         if target_calories > 0:
@@ -326,6 +336,9 @@ def build_txt_export(
         lines.append(f"Средние белки: {avg_prot:.0f}г/день")
         lines.append(f"Средние жиры: {avg_fat:.0f}г/день")
         lines.append(f"Средние углеводы: {avg_carbs:.0f}г/день")
+        lines.append(f"Средняя клетчатка: {avg_fiber:.0f}г/день")
+        if target_fiber_g > 0:
+            lines.append(f"Цель по клетчатке: {int(target_fiber_g)}г/день")
     else:
         lines.append("Записей за неделю нет.")
 

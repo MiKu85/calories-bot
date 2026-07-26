@@ -7,10 +7,8 @@ Set TEST_DATABASE_URL in .env.test or environment before running tests.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -18,21 +16,20 @@ from bot.db.models import Base
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://calories:calories@localhost:5432/calories_bot_test",
+    "postgresql+asyncpg://calories_bot_user:calories_bot_pass_2026@localhost:5432/calories_bot_test",
 )
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest_asyncio.fixture(scope="session")
+# Function-scoped engine: keeps every test's fixtures and body on the same event
+# loop that pytest-asyncio (0.24, auto mode) creates per test. A session-scoped
+# engine plus the old custom `event_loop` fixture bound async work to a different
+# loop → "attached to a different loop". Schema is (re)created per test; the suite
+# is small, so the cost is negligible and isolation is stronger.
+@pytest_asyncio.fixture
 async def engine():
     _engine = create_async_engine(TEST_DATABASE_URL, echo=False)
     async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield _engine
     async with _engine.begin() as conn:

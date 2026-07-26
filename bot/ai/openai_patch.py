@@ -42,8 +42,9 @@ _PATCHED_ITEM_SCHEMA = {
         "protein_g": {"type": "number"},
         "fat_g": {"type": "number"},
         "carbs_g": {"type": "number"},
+        "fiber_g": {"type": "number"},
     },
-    "required": ["id", "name", "portion_description", "calories", "protein_g", "fat_g", "carbs_g"],
+    "required": ["id", "name", "portion_description", "calories", "protein_g", "fat_g", "carbs_g", "fiber_g"],
     "additionalProperties": False,
 }
 
@@ -56,8 +57,9 @@ _EXTRA_ITEM_SCHEMA = {
         "protein_g": {"type": "number"},
         "fat_g": {"type": "number"},
         "carbs_g": {"type": "number"},
+        "fiber_g": {"type": "number"},
     },
-    "required": ["name", "portion_description", "calories", "protein_g", "fat_g", "carbs_g"],
+    "required": ["name", "portion_description", "calories", "protein_g", "fat_g", "carbs_g", "fiber_g"],
     "additionalProperties": False,
 }
 
@@ -69,8 +71,9 @@ _EXTRA_MEAL_SCHEMA = {
         "total_protein_g": {"type": "number"},
         "total_fat_g": {"type": "number"},
         "total_carbs_g": {"type": "number"},
+        "total_fiber_g": {"type": "number"},
     },
-    "required": ["items", "total_calories", "total_protein_g", "total_fat_g", "total_carbs_g"],
+    "required": ["items", "total_calories", "total_protein_g", "total_fat_g", "total_carbs_g", "total_fiber_g"],
     "additionalProperties": False,
 }
 
@@ -84,11 +87,12 @@ _JSON_SCHEMA = {
         "total_protein_g": {"type": "number"},
         "total_fat_g": {"type": "number"},
         "total_carbs_g": {"type": "number"},
+        "total_fiber_g": {"type": "number"},
         "extra_meals": {"type": "array", "items": _EXTRA_MEAL_SCHEMA},
     },
     "required": [
         "understood", "clarification_prompt",
-        "items", "total_calories", "total_protein_g", "total_fat_g", "total_carbs_g",
+        "items", "total_calories", "total_protein_g", "total_fat_g", "total_carbs_g", "total_fiber_g",
         "extra_meals",
     ],
     "additionalProperties": False,
@@ -214,6 +218,7 @@ def items_to_patch_input(meal_items: list[dict]) -> list[dict]:
             "protein_g": item.get("protein_g", 0),
             "fat_g": item.get("fat_g", 0),
             "carbs_g": item.get("carbs_g", 0),
+            "fiber_g": item.get("fiber_g", 0),
         }
         for i, item in enumerate(meal_items)
     ]
@@ -229,6 +234,7 @@ def patch_result_to_items(patched_items: list[PatchedItem]) -> list[dict]:
             "protein_g": item.protein_g,
             "fat_g": item.fat_g,
             "carbs_g": item.carbs_g,
+            "fiber_g": getattr(item, "fiber_g", 0.0),
         }
         for item in patched_items
     ]

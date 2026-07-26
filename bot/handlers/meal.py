@@ -131,6 +131,7 @@ async def save_and_reply_meal(
         agg=agg,
         user=user,
         is_photo=is_photo,
+        meal_fiber=result.total_fiber_g,
     )
 
     if disclaimer:
@@ -492,6 +493,7 @@ async def _apply_patch(
             protein_g=patch_result.total_protein_g,
             fat_g=patch_result.total_fat_g,
             carbs_g=patch_result.total_carbs_g,
+            fiber_g=patch_result.total_fiber_g,
         )
     ]
     for extra in patch_result.extra_meals:
@@ -503,6 +505,7 @@ async def _apply_patch(
                 "protein_g": it.protein_g,
                 "fat_g": it.fat_g,
                 "carbs_g": it.carbs_g,
+                "fiber_g": getattr(it, "fiber_g", 0.0),
             }
             for it in extra.items
         ]
@@ -513,6 +516,7 @@ async def _apply_patch(
                 protein_g=extra.total_protein_g,
                 fat_g=extra.total_fat_g,
                 carbs_g=extra.total_carbs_g,
+                fiber_g=extra.total_fiber_g,
             )
         )
 
@@ -548,6 +552,7 @@ async def _apply_patch(
                 meal_items=spec.items,
                 agg=agg,
                 user=user,
+                meal_fiber=spec.fiber_g,
             )
             await message.answer(
                 f"<b>Приём {idx}:</b>\n\n{response}",
@@ -565,6 +570,7 @@ async def _apply_patch(
         meal_items=first_items,
         agg=agg,
         user=user,
+        meal_fiber=specs[0].fiber_g,
     )
     await message.answer(
         f"Исправил!\n\n{response}",

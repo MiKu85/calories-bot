@@ -29,6 +29,7 @@ sa_select = select
 
 from bot.db.models import DailyAggregate, OnboardingState, User
 from bot.services.morning_summary import DayData, UserTargets, build_morning_summary
+from bot.services.target_calculator import fiber_target_for
 from bot.services.tip_service import get_morning_tip
 from bot.services.weekly_stats import WeeklyData, build_weekly_message, compute_week_summary
 
@@ -215,6 +216,7 @@ async def _build_weekly_summary(
                 fat_g=agg_by_date[d].total_fat_g if d in agg_by_date else 0,
                 carbs_g=agg_by_date[d].total_carbs_g if d in agg_by_date else 0,
                 meals_count=agg_by_date[d].meals_count if d in agg_by_date else 0,
+                fiber_g=agg_by_date[d].total_fiber_g if d in agg_by_date else 0,
             )
             for d in week_days
         ]
@@ -223,6 +225,7 @@ async def _build_weekly_summary(
         target_prot = fresh.daily_protein_g_target or 0.0
         target_fat = fresh.daily_fat_g_target or 0.0
         target_carbs = fresh.daily_carbs_g_target or 0.0
+        target_fiber = fresh.daily_fiber_g_target or fiber_target_for(fresh.sex)
 
         summary = compute_week_summary(week_data, target_cal, target_prot, target_fat, target_carbs)
         morning_tip = await get_morning_tip(fresh, db)
@@ -239,6 +242,7 @@ async def _build_weekly_summary(
         target_fat_g=target_fat,
         target_carbs_g=target_carbs,
         tip=morning_tip,
+        target_fiber_g=target_fiber,
     )
     return text
 

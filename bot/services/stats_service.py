@@ -11,6 +11,12 @@ from __future__ import annotations
 import random
 
 from bot.db.models import DailyAggregate, User
+from bot.services.target_calculator import fiber_target_for
+
+
+def _fiber_target(user: User) -> float:
+    """Fiber goal for a user; falls back to sex-based default if not stored yet."""
+    return user.daily_fiber_g_target or fiber_target_for(user.sex)
 
 # ── Supportive phrases (post-meal) ────────────────────────────────────────────
 
@@ -100,6 +106,7 @@ def format_meal_result(
     agg: DailyAggregate,
     user: User,
     is_photo: bool = False,
+    meal_fiber: float = 0.0,
 ) -> str:
     """
     Message shown immediately after a meal is saved (before user confirmation).
@@ -126,34 +133,38 @@ def format_meal_result(
             prot = int(item.get("protein_g", 0))
             fat = int(item.get("fat_g", 0))
             carbs = int(item.get("carbs_g", 0))
+            fiber = int(item.get("fiber_g", 0) or 0)
             portion = _format_portion(item.get("portion_description", ""), is_photo)
             lines.append(f"{idx}. <b>{item['name']}</b> {portion}")
-            lines.append(f"   {kcal} ккал · Б {prot} · Ж {fat} · У {carbs}")
+            lines.append(f"   {kcal} ккал · Б {prot} · Ж {fat} · У {carbs} · Клетчатка {fiber}")
             lines.append("")
 
     # This meal totals
     lines.append(
         f"<b>Этот приём:</b> {int(meal_calories)} ккал"
-        f" · Б {meal_protein:.0f} · Ж {meal_fat:.0f} · У {meal_carbs:.0f}"
+        f" · Б {meal_protein:.0f} · Ж {meal_fat:.0f} · У {meal_carbs:.0f} · Клетчатка {meal_fiber:.0f}"
     )
     lines.append("")
 
     # Daily progress
     if user.targets_set and user.daily_calories_target:
+        fiber_target = _fiber_target(user)
         lines.append(
             f"<b>Сегодня:</b> {int(agg.total_calories)} ккал из {int(user.daily_calories_target)}"
             f" · Б {agg.total_protein_g:.0f}г · Ж {agg.total_fat_g:.0f}г · У {agg.total_carbs_g:.0f}г"
+            f" · Клетчатка {agg.total_fiber_g:.0f}г"
         )
         cal_str = _remaining_str(agg.total_calories, user.daily_calories_target, "ккал")
         prot_str = _macro_remaining("Б", agg.total_protein_g, user.daily_protein_g_target)
         fat_str = _macro_remaining("Ж", agg.total_fat_g, user.daily_fat_g_target)
         carbs_str = _macro_remaining("У", agg.total_carbs_g, user.daily_carbs_g_target)
-        lines.append(f"<b>Осталось:</b> {cal_str} · {prot_str} · {fat_str} · {carbs_str}")
+        fiber_str = _macro_remaining("Клетчатка", agg.total_fiber_g, fiber_target)
+        lines.append(f"<b>Осталось:</b> {cal_str} · {prot_str} · {fat_str} · {carbs_str} · {fiber_str}")
     else:
         lines.append(
             f"<b>Сегодня:</b> {int(agg.total_calories)} ккал"
             f" · Б {agg.total_protein_g:.0f} · Ж {agg.total_fat_g:.0f}"
-            f" · У {agg.total_carbs_g:.0f}"
+            f" · У {agg.total_carbs_g:.0f} · Клетчатка {agg.total_fiber_g:.0f}"
         )
 
     return "\n".join(lines)
@@ -191,12 +202,14 @@ def format_stats(agg: DailyAggregate, user: User) -> str:
         lines.append(stat_row("Белки  ", agg.total_protein_g, user.daily_protein_g_target, "г"))
         lines.append(stat_row("Жиры   ", agg.total_fat_g, user.daily_fat_g_target, "г"))
         lines.append(stat_row("Углеводы", agg.total_carbs_g, user.daily_carbs_g_target, "г"))
+        lines.append(stat_row("Клетчатка", agg.total_fiber_g, _fiber_target(user), "г"))
     else:
         # No targets set — show what was consumed
         lines.append(f"Калории: {int(agg.total_calories)} ккал")
         lines.append(f"Белки: {agg.total_protein_g:.1f} г")
         lines.append(f"Жиры: {agg.total_fat_g:.1f} г")
         lines.append(f"Углеводы: {agg.total_carbs_g:.1f} г")
+        lines.append(f"Клетчатка: {agg.total_fiber_g:.1f} г")
         lines.append("")
         lines.append(
             "Цели не рассчитаны. Зайди в /profile и заполни профиль полностью."

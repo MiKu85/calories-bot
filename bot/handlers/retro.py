@@ -373,6 +373,7 @@ async def _run_retro_pipeline(
             "protein_g": it.protein_g,
             "fat_g": it.fat_g,
             "carbs_g": it.carbs_g,
+            "fiber_g": getattr(it, "fiber_g", 0.0),
         }
         for it in result.items
     ]
@@ -385,6 +386,7 @@ async def _run_retro_pipeline(
         protein_g=result.total_protein_g,
         fat_g=result.total_fat_g,
         carbs_g=result.total_carbs_g,
+        fiber_g=result.total_fiber_g,
         confidence=result.confidence,
         confidence_notes=result.confidence_notes,
         meal_items=items_json,
@@ -416,6 +418,7 @@ async def _run_retro_pipeline(
         meal_fat=result.total_fat_g,
         meal_carbs=result.total_carbs_g,
         meal_items=meal.meal_items,
+        meal_fiber=result.total_fiber_g,
         agg=agg,
         user=user,
     )

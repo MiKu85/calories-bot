@@ -26,6 +26,10 @@ class MealItem(BaseModel):
     protein_g: float = Field(ge=0)
     fat_g: float = Field(ge=0)
     carbs_g: float = Field(ge=0)
+    fiber_g: float = Field(
+        ge=0, default=0.0,
+        description="Dietary fiber in grams (subset of carbs). Estimate conservatively; 0 if unknown",
+    )
 
 
 class MealAnalysisResult(BaseModel):
@@ -42,6 +46,7 @@ class MealAnalysisResult(BaseModel):
     total_protein_g: float = Field(ge=0)
     total_fat_g: float = Field(ge=0)
     total_carbs_g: float = Field(ge=0)
+    total_fiber_g: float = Field(ge=0, default=0.0)
 
     confidence: ConfidenceLevel
     confidence_notes: str | None = Field(
@@ -77,6 +82,7 @@ class PatchedItem(BaseModel):
     protein_g: float = Field(ge=0)
     fat_g: float = Field(ge=0)
     carbs_g: float = Field(ge=0)
+    fiber_g: float = Field(ge=0, default=0.0)
 
 
 class ExtraMealItem(BaseModel):
@@ -88,6 +94,7 @@ class ExtraMealItem(BaseModel):
     protein_g: float = Field(ge=0)
     fat_g: float = Field(ge=0)
     carbs_g: float = Field(ge=0)
+    fiber_g: float = Field(ge=0, default=0.0)
 
 
 class ExtraMeal(BaseModel):
@@ -102,6 +109,7 @@ class ExtraMeal(BaseModel):
     total_protein_g: float = Field(default=0.0, ge=0)
     total_fat_g: float = Field(default=0.0, ge=0)
     total_carbs_g: float = Field(default=0.0, ge=0)
+    total_fiber_g: float = Field(default=0.0, ge=0)
 
 
 class MealPatchResult(BaseModel):
@@ -129,6 +137,7 @@ class MealPatchResult(BaseModel):
     total_protein_g: float = Field(default=0.0, ge=0)
     total_fat_g: float = Field(default=0.0, ge=0)
     total_carbs_g: float = Field(default=0.0, ge=0)
+    total_fiber_g: float = Field(default=0.0, ge=0)
 
     extra_meals: list[ExtraMeal] = Field(
         default_factory=list,

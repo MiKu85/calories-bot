@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import DailyAggregate, Meal, OnboardingState, User
+from bot.services.target_calculator import fiber_target_for
 from bot.services.meal_service import get_today_aggregate
 from bot.services.stats_service import format_stats
 from bot.services.weekly_stats import (
@@ -91,6 +92,7 @@ async def _send_export(
             fat_g=agg_by_date[d].total_fat_g if d in agg_by_date else 0,
             carbs_g=agg_by_date[d].total_carbs_g if d in agg_by_date else 0,
             meals_count=agg_by_date[d].meals_count if d in agg_by_date else 0,
+            fiber_g=agg_by_date[d].total_fiber_g if d in agg_by_date else 0,
         )
         for d in week_days
     ]
@@ -117,6 +119,7 @@ async def _send_export(
             "protein_g": m.protein_g,
             "fat_g": m.fat_g,
             "carbs_g": m.carbs_g,
+            "fiber_g": m.fiber_g,
             "meal_items": m.meal_items,
         })
 
@@ -130,6 +133,7 @@ async def _send_export(
         target_protein_g=user.daily_protein_g_target or 0.0,
         target_fat_g=user.daily_fat_g_target or 0.0,
         target_carbs_g=user.daily_carbs_g_target or 0.0,
+        target_fiber_g=user.daily_fiber_g_target or fiber_target_for(user.sex),
     )
 
     filename = f"diary_{week_start}_{week_end}.txt"

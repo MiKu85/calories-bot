@@ -112,6 +112,8 @@ class User(Base):
     daily_protein_g_target: Mapped[float | None] = mapped_column(Float)
     daily_fat_g_target: Mapped[float | None] = mapped_column(Float)
     daily_carbs_g_target: Mapped[float | None] = mapped_column(Float)
+    # Fiber target: fixed by sex (женщины 25 г, мужчины 30 г) — see target_calculator
+    daily_fiber_g_target: Mapped[float | None] = mapped_column(Float)
 
     # State
     onboarding_state: Mapped[OnboardingState] = mapped_column(
@@ -176,6 +178,8 @@ class Meal(Base):
     protein_g: Mapped[float] = mapped_column(Float, nullable=False)
     fat_g: Mapped[float] = mapped_column(Float, nullable=False)
     carbs_g: Mapped[float] = mapped_column(Float, nullable=False)
+    # Fiber (subset of carbs). Default 0 for records logged before this feature.
+    fiber_g: Mapped[float] = mapped_column(Float, default=0.0, nullable=False, server_default="0")
 
     # AI analysis details
     confidence: Mapped[ConfidenceLevel] = mapped_column(
@@ -231,8 +235,9 @@ class SavedMeal(Base):
     protein_g: Mapped[float] = mapped_column(Float, nullable=False)
     fat_g: Mapped[float] = mapped_column(Float, nullable=False)
     carbs_g: Mapped[float] = mapped_column(Float, nullable=False)
+    fiber_g: Mapped[float] = mapped_column(Float, default=0.0, nullable=False, server_default="0")
 
-    # Same shape as Meal.meal_items: [{name, portion_description, calories, protein_g, fat_g, carbs_g}]
+    # Same shape as Meal.meal_items: [{name, portion_description, calories, protein_g, fat_g, carbs_g, fiber_g}]
     meal_items: Mapped[list | None] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -257,6 +262,7 @@ class DailyAggregate(Base):
     total_protein_g: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     total_fat_g: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     total_carbs_g: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    total_fiber_g: Mapped[float] = mapped_column(Float, default=0.0, nullable=False, server_default="0")
     meals_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     updated_at: Mapped[datetime] = mapped_column(

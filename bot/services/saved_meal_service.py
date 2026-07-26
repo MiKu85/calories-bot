@@ -60,6 +60,7 @@ async def create_from_meal(
         protein_g=meal.protein_g,
         fat_g=meal.fat_g,
         carbs_g=meal.carbs_g,
+        fiber_g=meal.fiber_g,
         meal_items=meal.meal_items,
     )
     db.add(saved)
@@ -90,6 +91,7 @@ def to_analysis_result(saved: SavedMeal) -> MealAnalysisResult:
         total_protein_g=saved.protein_g,
         total_fat_g=saved.fat_g,
         total_carbs_g=saved.carbs_g,
+        total_fiber_g=saved.fiber_g,
         confidence=ConfidenceLevel.high,
         needs_clarification=False,
     )
