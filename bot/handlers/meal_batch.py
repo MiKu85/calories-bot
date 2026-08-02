@@ -37,7 +37,7 @@ from bot.ai.openai_batch import BatchMessage
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult
 from bot.db.models import MealInputType, User
 from bot.db.session import AsyncSessionLocal
-from bot.handlers.meal import MealStates, OnboardingCompleted
+from bot.handlers.meal import MealStates, OnboardingCompleted, build_duplicate_warning
 from bot.keyboards.meal import meal_result_kb
 from bot.services.debounce_service import BufferedMessage
 from bot.services.meal_service import (
@@ -273,6 +273,24 @@ async def flush_meal_buffer(
                 idx=idx,
                 confidence=result.confidence,
             )
+
+            # ── Duplicate detection ───────────────────────────────────────────
+            # Photos land here, not in save_and_reply_meal — without this check
+            # a re-shot photo of the same meal is silently logged twice.
+            # Skip inside a split batch: those meals are intentionally separate.
+            if not multi:
+                warning = await build_duplicate_warning(
+                    user_id=user.id,
+                    new_meal_id=meal.id,
+                    raw_input=raw_input or first_caption,
+                    db=db,
+                    tz_name=user.timezone,
+                )
+                if warning is not None:
+                    text, kb = warning
+                    await bot.send_message(
+                        chat_id, text, parse_mode="HTML", reply_markup=kb
+                    )
 
         # ── 7. Commit ─────────────────────────────────────────────────────────
         # flush_meal_buffer runs outside any handler/middleware context, so

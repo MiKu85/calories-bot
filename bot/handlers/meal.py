@@ -34,7 +34,7 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.ai import get_patch_provider, get_text_provider
@@ -53,8 +53,9 @@ from bot.services.meal_service import (
     save_meal,
     update_meal,
 )
-from bot.services.stats_service import format_meal_result, format_stats
+from bot.services.stats_service import format_meal_result
 from bot.services.tip_service import maybe_get_tip  # shown in confirmation message
+from bot.utils.tz import local_time
 from config import settings
 
 logger = structlog.get_logger(__name__)
@@ -149,27 +150,57 @@ async def save_and_reply_meal(
     )
 
     # ── Duplicate detection ───────────────────────────────────────────────────
-    recent = await get_recent_meal(
+    warning = await build_duplicate_warning(
         user_id=user.id,
+        new_meal_id=meal.id,
+        raw_input=raw_input,
+        db=db,
+        tz_name=user.timezone,
+    )
+    if warning is not None:
+        text, kb = warning
+        await message.answer(text, reply_markup=kb)
+
+
+async def build_duplicate_warning(
+    user_id: int,
+    new_meal_id: int,
+    raw_input: str | None,
+    db: AsyncSession,
+    tz_name: str | None = None,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """
+    Check whether the just-saved meal looks like a repeat of a recent one.
+
+    Returns (text, keyboard) to send, or None when nothing suspicious.
+    Shared by the text/voice path (save_and_reply_meal) and the debounce batch
+    path (meal_batch.flush_meal_buffer), which sends via bot.send_message.
+    """
+    recent = await get_recent_meal(
+        user_id=user_id,
         within_minutes=settings.meal_duplicate_window_minutes,
-        exclude_meal_id=meal.id,
+        exclude_meal_id=new_meal_id,
         db=db,
     )
-    if recent is not None:
-        similarity = _jaccard(raw_input, recent.raw_input)
-        # Trigger if: texts are similar OR both have no raw_input (two photos in quick succession)
-        is_suspicious = (
-            similarity >= settings.meal_duplicate_similarity_threshold
-            or (raw_input is None and recent.raw_input is None)
-        )
-        if is_suspicious:
-            from bot.keyboards.meal import duplicate_check_kb  # avoid circular at module level
-            import datetime as _dt
-            local_time = recent.logged_at.strftime("%H:%M")
-            await message.answer(
-                f"<i>Похоже на приём в {local_time} — это не повтор?</i>",
-                reply_markup=duplicate_check_kb(meal.id),
-            )
+    if recent is None:
+        return None
+
+    similarity = _jaccard(raw_input, recent.raw_input)
+    # Trigger if: texts are similar OR both have no raw_input (two photos in quick succession)
+    is_suspicious = (
+        similarity >= settings.meal_duplicate_similarity_threshold
+        or (raw_input is None and recent.raw_input is None)
+    )
+    if not is_suspicious:
+        return None
+
+    from bot.keyboards.meal import duplicate_check_kb  # avoid circular at module level
+
+    recent_time = local_time(recent.logged_at, tz_name)
+    return (
+        f"<i>Похоже на приём в {recent_time} — это не повтор?</i>",
+        duplicate_check_kb(new_meal_id),
+    )
 
 
 # ── Shared: text/voice analysis pipeline ──────────────────────────────────────
@@ -899,17 +930,6 @@ async def meal_fix_callback(
         "· «исправь весь приём» + новый состав\n\n"
         "/cancel — отменить."
     )
-
-
-# ── 📊 Inline stats ───────────────────────────────────────────────────────────
-
-@router.callback_query(F.data == "meal_stats")
-async def meal_stats_callback(
-    callback: CallbackQuery, user: User, db: AsyncSession
-) -> None:
-    await callback.answer()
-    agg = await get_today_aggregate(user.id, db)
-    await callback.message.answer(format_stats(agg, user))
 
 
 # ── Duplicate detection callbacks ─────────────────────────────────────────────

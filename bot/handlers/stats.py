@@ -30,6 +30,8 @@ router = Router(name="stats")
 
 def _export_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    # Правка задним числом: из статистики видно перебор, чинить его идут сюда
+    builder.button(text="🗂 Дневник по дням", callback_data="meal_stats")
     builder.button(text="📥 Выгрузить за неделю", callback_data="export_week")
     builder.adjust(1)
     return builder.as_markup()
@@ -134,6 +136,7 @@ async def _send_export(
         target_fat_g=user.daily_fat_g_target or 0.0,
         target_carbs_g=user.daily_carbs_g_target or 0.0,
         target_fiber_g=user.daily_fiber_g_target or fiber_target_for(user.sex),
+        tz_name=user.timezone,
     )
 
     filename = f"diary_{week_start}_{week_end}.txt"

@@ -230,6 +230,27 @@ async def get_recent_meal(
     return None
 
 
+async def get_meals_for_date(
+    user_id: int, target_date: date_type, db: AsyncSession
+) -> list[Meal]:
+    """Return all non-deleted meals for the given UTC date, oldest first."""
+    stmt = (
+        select(Meal)
+        .where(
+            Meal.user_id == user_id,
+            Meal.is_deleted == False,  # noqa: E712
+            cast(Meal.logged_at, Date) == target_date,
+        )
+        .order_by(Meal.logged_at.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_today_meals(user_id: int, db: AsyncSession) -> list[Meal]:
+    return await get_meals_for_date(user_id, _today_utc(), db)
+
+
 async def recalculate_daily_aggregate(
     user_id: int, target_date: date_type, db: AsyncSession
 ) -> DailyAggregate:

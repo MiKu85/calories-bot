@@ -60,6 +60,54 @@ def meal_confirm_kb(meal_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def day_meals_kb(
+    meals: list,
+    target_date,
+    *,
+    tz_name: str | None = None,
+    has_prev: bool = True,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    """
+    Keyboard for the diary screen: fix/delete per meal plus day navigation.
+
+    The buttons under the original result message are easy to miss once the chat
+    has scrolled on, so this is the permanent way to edit any past meal.
+    Meal ids carry the date so the screen can be redrawn after a change.
+    """
+    from datetime import timedelta
+
+    from bot.utils.tz import local_time
+
+    builder = InlineKeyboardBuilder()
+    rows: list[int] = []
+    iso = target_date.isoformat()
+
+    for meal in meals:
+        time_label = local_time(meal.logged_at, tz_name)
+        builder.button(
+            text=f"🔧 {time_label} · {round(meal.calories)} ккал",
+            callback_data=f"meal_fix_day:{meal.id}:{iso}",
+        )
+        builder.button(text="🗑", callback_data=f"meal_del_day:{meal.id}:{iso}")
+        rows.append(2)
+
+    nav = 0
+    if has_prev:
+        prev_day = (target_date - timedelta(days=1)).isoformat()
+        builder.button(text="← предыдущий день", callback_data=f"day_nav:{prev_day}")
+        nav += 1
+    if has_next:
+        next_day = (target_date + timedelta(days=1)).isoformat()
+        builder.button(text="следующий день →", callback_data=f"day_nav:{next_day}")
+        nav += 1
+    if nav:
+        rows.append(nav)
+
+    builder.adjust(*rows)
+    return builder.as_markup()
+
+
 def duplicate_check_kb(new_meal_id: int) -> InlineKeyboardMarkup:
     """
     Keyboard shown when a possible duplicate meal is detected.

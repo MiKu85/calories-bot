@@ -251,6 +251,7 @@ def build_txt_export(
     target_fat_g: float,
     target_carbs_g: float,
     target_fiber_g: float = 0.0,
+    tz_name: str | None = None,
 ) -> str:
     """
     Build a plain-text export for the week.
@@ -258,7 +259,10 @@ def build_txt_export(
     week_meals: {date: list of meal dicts with keys
                  logged_at, calories, protein_g, fat_g, carbs_g, fiber_g, meal_items}
     week_data: daily aggregates (WeeklyData list)
+    tz_name: пользовательский часовой пояс — время приёмов печатается локальным,
+             иначе оно расходится с тем, что человек видел в чате.
     """
+    from bot.utils.tz import local_time
     _FULL_MONTHS = {
         1: "января", 2: "февраля", 3: "марта", 4: "апреля",
         5: "мая", 6: "июня", 7: "июля", 8: "августа",
@@ -288,7 +292,7 @@ def build_txt_export(
         else:
             for m in sorted(meals_today, key=lambda x: x.get("logged_at") or ""):
                 logged_at = m.get("logged_at")
-                time_str = logged_at.strftime("%H:%M") if hasattr(logged_at, "strftime") else ""
+                time_str = local_time(logged_at, tz_name) if hasattr(logged_at, "strftime") else ""
                 cal = int(m.get("calories", 0))
                 prot = m.get("protein_g", 0)
                 fat = m.get("fat_g", 0)

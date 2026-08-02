@@ -182,7 +182,9 @@ class OpenAIBatchProvider:
                     {"role": "user", "content": user_content},
                 ],
                 response_format=_response_format,
-                temperature=0.2,
+                # Низкая температура: повторное фото того же блюда не должно
+                # получать заметно другой вес порции.
+                temperature=0.1,
                 max_tokens=2048,
             )
 
