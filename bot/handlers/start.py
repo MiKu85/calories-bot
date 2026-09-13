@@ -72,6 +72,10 @@ async def cmd_start(
         await db.flush()
 
     if user.onboarding_state == OnboardingState.completed:
+        # /start — универсальный выход: если человек застрял в каком-то диалоге
+        # (название блюда, исправление приёма), он первым делом жмёт «Старт».
+        if await state.get_state() is not None:
+            await state.clear()
         await message.answer(_ALREADY_DONE)
         return
 

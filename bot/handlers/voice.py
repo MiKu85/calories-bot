@@ -32,6 +32,7 @@ from aiogram.types import Message
 from bot.ai.factory import get_stt_provider
 from bot.db.models import User
 from bot.handlers.meal import MealStates, OnboardingCompleted
+from bot.handlers.saved_meals import SavedMealStates
 from bot.services.debounce_service import BufferedMessage, meal_debounce_service
 
 logger = structlog.get_logger(__name__)
@@ -51,9 +52,19 @@ async def _run_stt(audio_bytes: bytes, msg: BufferedMessage) -> None:
         del audio_bytes  # release memory as soon as STT is done
 
 
+# Как и с фото: голосовое — это описание еды, а не ответ на вопрос про название
+# сохранённого блюда. Принимаем его и выходим из того диалога.
+_VOICE_IS_MEAL_IN = (
+    None,
+    MealStates.awaiting_correction,
+    SavedMealStates.waiting_name,
+    SavedMealStates.waiting_rename,
+)
+
+
 @router.message(
     OnboardingCompleted(),
-    StateFilter(None, MealStates.awaiting_correction),
+    StateFilter(*_VOICE_IS_MEAL_IN),
     F.voice,
 )
 async def handle_voice_meal(
@@ -62,6 +73,10 @@ async def handle_voice_meal(
     bot: Bot,
     state: FSMContext,
 ) -> None:
+    if await state.get_state() in {
+        SavedMealStates.waiting_name.state, SavedMealStates.waiting_rename.state,
+    }:
+        await message.answer("Отменил сохранение блюда — слушаю голосовое.")
     await state.clear()
 
     log = logger.bind(

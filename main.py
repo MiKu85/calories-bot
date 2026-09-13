@@ -17,6 +17,7 @@ from bot.db.session import AsyncSessionLocal
 from bot.handlers.admin import router as admin_router
 from bot.handlers.diary import router as diary_router
 from bot.handlers.errors import router as errors_router
+from bot.handlers.fallback import router as fallback_router
 from bot.handlers.feedback import router as feedback_router
 from bot.handlers.goals import router as goals_router
 from bot.handlers.help import router as help_router
@@ -98,7 +99,8 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(meal_batch_router) # augment/merge callbacks + awaiting_augment state
     dp.include_router(voice_router)      # F.voice — before meal catch-all
     dp.include_router(photo_router)      # F.photo — before meal catch-all
-    dp.include_router(meal_router)       # last: catches all remaining text
+    dp.include_router(meal_router)       # catches all remaining text
+    dp.include_router(fallback_router)   # truly last: отвечает на всё, что не подошло
 
     return dp
 

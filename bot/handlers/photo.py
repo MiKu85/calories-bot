@@ -28,15 +28,28 @@ from aiogram.types import Message
 
 from bot.db.models import User
 from bot.handlers.meal import MealStates, OnboardingCompleted
+from bot.handlers.saved_meals import SavedMealStates
 from bot.services.debounce_service import BufferedMessage, meal_debounce_service
 
 logger = structlog.get_logger(__name__)
 router = Router(name="photo")
 
 
+# Состояния, из которых фото всегда трактуется как новый приём: человек прислал
+# снимок тарелки, а не ответ на вопрос бота. Состояние при этом сбрасывается —
+# иначе пользователь застревает в диалоге и бот молча игнорирует фото.
+_PHOTO_IS_MEAL_IN = (
+    None,
+    MealStates.awaiting_correction,
+    MealStates.awaiting_patch,
+    SavedMealStates.waiting_name,
+    SavedMealStates.waiting_rename,
+)
+
+
 @router.message(
     OnboardingCompleted(),
-    StateFilter(None, MealStates.awaiting_correction, MealStates.awaiting_patch),
+    StateFilter(*_PHOTO_IS_MEAL_IN),
     F.photo,
 )
 async def handle_photo_meal(
@@ -45,6 +58,12 @@ async def handle_photo_meal(
     bot: Bot,
     state: FSMContext,
 ) -> None:
+    # Фото прервало диалог сохранения блюда — скажем об этом, иначе человек
+    # не поймёт, куда делся вопрос про название.
+    if await state.get_state() in {
+        SavedMealStates.waiting_name.state, SavedMealStates.waiting_rename.state,
+    }:
+        await message.answer("Отменил сохранение блюда — считаю фото.")
     await state.clear()
 
     log = logger.bind(telegram_id=user.telegram_id)

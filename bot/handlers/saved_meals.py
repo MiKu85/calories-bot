@@ -13,10 +13,15 @@ from __future__ import annotations
 
 import structlog
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import MealInputType, OnboardingState, User
@@ -49,6 +54,23 @@ def _valid_name(text: str | None) -> str | None:
     if not name or len(name) > _NAME_MAX:
         return None
     return name
+
+
+def _cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✋ Отмена", callback_data="saved_name_cancel"),
+    ]])
+
+
+def _too_long_hint(text: str | None) -> str:
+    """Подсказка вместо сухого «до 100 символов»: люди присылают сюда описание
+    блюда целиком и не понимают, почему бот повторяет одно и то же."""
+    length = len((text or "").strip())
+    return (
+        f"Это описание, а не название — {length} символов, а нужно "
+        f"до {_NAME_MAX}. Пришли короткое имя, например «Котлеты с салатом».\n\n"
+        "А если сохранять не нужно — нажми «✋ Отмена» или отправь /cancel."
+    )
 
 
 # ── /meals: список ─────────────────────────────────────────────────────────────
@@ -89,7 +111,8 @@ async def cb_save_template(
     await state.update_data(source_meal_id=meal_id)
     await cb.message.answer(
         "Как назвать это блюдо? Пришли короткое название "
-        "(например «Протеиновый коктейль»)."
+        "(например «Протеиновый коктейль»).",
+        reply_markup=_cancel_kb(),
     )
     await cb.answer()
 
@@ -100,7 +123,7 @@ async def receive_name(
 ) -> None:
     name = _valid_name(message.text)
     if name is None:
-        await message.answer(f"Пришли название текстом, до {_NAME_MAX} символов.")
+        await message.answer(_too_long_hint(message.text), reply_markup=_cancel_kb())
         return
     data = await state.get_data()
     meal = await get_meal_by_id(data.get("source_meal_id", 0), db)
@@ -116,6 +139,29 @@ async def receive_name(
     logger.bind(telegram_id=user.telegram_id).info("saved_meal_created", saved_id=saved.id)
     await message.answer(
         f"✅ Сохранил «{saved.name}» в твои блюда. Добавляй его через /meals."
+    )
+
+
+@router.callback_query(F.data == "saved_name_cancel")
+async def cb_cancel_name(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer("Отменил. Пиши или присылай фото — посчитаю приём.")
+    await cb.answer()
+
+
+# Стикер, видео, документ и прочее в ожидании названия: раньше бот на них молчал,
+# и человек не понимал, почему его сообщения уходят в пустоту. Фото и голосовое
+# сюда не попадают — их перехватывают photo/voice-роутеры как новый приём.
+@router.message(
+    StateFilter(SavedMealStates.waiting_name, SavedMealStates.waiting_rename),
+    ~F.text, ~F.photo, ~F.voice,
+)
+async def receive_name_unsupported(message: Message) -> None:
+    await message.answer(
+        "Жду название блюда текстом. Если сохранять передумал(а) — "
+        "нажми «✋ Отмена» или отправь /cancel.",
+        reply_markup=_cancel_kb(),
     )
 
 
@@ -203,7 +249,9 @@ async def cb_rename(
         return
     await state.set_state(SavedMealStates.waiting_rename)
     await state.update_data(saved_id=saved.id)
-    await cb.message.answer(f"Пришли новое название для «{saved.name}»:")
+    await cb.message.answer(
+        f"Пришли новое название для «{saved.name}»:", reply_markup=_cancel_kb(),
+    )
     await cb.answer()
 
 
@@ -213,7 +261,7 @@ async def receive_rename(
 ) -> None:
     name = _valid_name(message.text)
     if name is None:
-        await message.answer(f"Пришли название текстом, до {_NAME_MAX} символов.")
+        await message.answer(_too_long_hint(message.text), reply_markup=_cancel_kb())
         return
     data = await state.get_data()
     saved = await saved_meal_service.get(data.get("saved_id", 0), db)
