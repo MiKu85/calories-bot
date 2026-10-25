@@ -38,6 +38,7 @@ def get_text_provider() -> TextProvider:
         return OpenAITextProvider(
             client=_openai_client(),
             model=settings.text_model_name,
+            fallback=settings.text_model_fallback,
         )
     raise ValueError(f"Unknown text model provider: {provider!r}. Supported: openai")
 
@@ -48,6 +49,7 @@ def get_vision_provider() -> VisionProvider:
         return OpenAIVisionProvider(
             client=_openai_client(),
             model=settings.vision_model_name,
+            fallback=settings.vision_model_fallback,
         )
     raise ValueError(f"Unknown vision model provider: {provider!r}. Supported: openai")
 
@@ -59,6 +61,7 @@ def get_patch_provider() -> PatchProvider:
         return OpenAIPatchProvider(
             client=_openai_client(),
             model=settings.text_model_name,
+            fallback=settings.text_model_fallback,
         )
     raise ValueError(f"Unknown patch model provider: {provider!r}. Supported: openai")
 
@@ -80,5 +83,6 @@ def get_batch_provider() -> OpenAIBatchProvider:
         return OpenAIBatchProvider(
             client=_openai_client(),
             model=settings.vision_model_name,
+            fallback=settings.vision_model_fallback,
         )
     raise ValueError(f"Unknown batch model provider: {provider!r}. Supported: openai")

@@ -32,6 +32,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.ai.fallback import is_provider_outage
 from bot.ai.factory import get_batch_provider, get_stt_provider, get_text_provider
 from bot.ai.openai_batch import BatchMessage
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult
@@ -154,7 +155,8 @@ async def flush_meal_buffer(
                     pass
             await bot.send_message(
                 chat_id,
-                "Не смог обработать запрос — попробуй ещё раз или опиши приём заново.",
+                "Сервис распознавания сейчас недоступен — это на нашей стороне, не у тебя. Пришли этот приём ещё раз через несколько минут." if is_provider_outage(exc)
+                else "Не смог обработать запрос — попробуй ещё раз или опиши приём заново.",
             )
             return
 

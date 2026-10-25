@@ -21,6 +21,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from bot.ai.fallback import create_with_fallback, models_chain
 from bot.ai.schemas import ExtraMeal, ExtraMealItem, MealPatchResult, PatchedItem
 
 logger = structlog.get_logger(__name__)
@@ -100,9 +101,12 @@ _JSON_SCHEMA = {
 
 
 class OpenAIPatchProvider:
-    def __init__(self, client: AsyncOpenAI, model: str) -> None:
+    def __init__(self, client: AsyncOpenAI, model: str,
+                 fallback: str | None = None) -> None:
         self._client = client
         self._model = model
+        # Запасная модель на случай 503 от провайдера основной.
+        self._models = models_chain(model, fallback)
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -132,8 +136,8 @@ class OpenAIPatchProvider:
         log.debug("meal_patch_prompt", prompt_chars=len(system_prompt), user_content=user_content)
 
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
+            response = await create_with_fallback(
+                self._client, self._models,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},

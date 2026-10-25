@@ -38,6 +38,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.ai import get_patch_provider, get_text_provider
+from bot.ai.fallback import is_provider_outage
 from bot.ai.openai_patch import items_to_patch_input, patch_result_to_items
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult, MealItem
 from bot.db.models import MealInputType, OnboardingState, User
@@ -233,7 +234,8 @@ async def run_meal_pipeline(
     except Exception as exc:
         log.error("meal_analysis_failed", error=str(exc))
         await message.answer(
-            "Не смог обработать запрос — попробуй ещё раз или опиши иначе."
+            "Сервис распознавания сейчас недоступен — это на нашей стороне, не у тебя. Пришли этот приём ещё раз через несколько минут." if is_provider_outage(exc)
+            else "Не смог обработать запрос — попробуй ещё раз или опиши иначе."
         )
         return
 

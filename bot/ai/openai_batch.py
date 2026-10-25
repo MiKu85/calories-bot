@@ -27,6 +27,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from bot.ai.fallback import create_with_fallback, models_chain
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult
 
 logger = structlog.get_logger(__name__)
@@ -105,9 +106,12 @@ _BATCH_SCHEMA = {
 # ── Provider ──────────────────────────────────────────────────────────────────
 
 class OpenAIBatchProvider:
-    def __init__(self, client: AsyncOpenAI, model: str) -> None:
+    def __init__(self, client: AsyncOpenAI, model: str,
+                 fallback: str | None = None) -> None:
         self._client = client
         self._model = model
+        # Запасная модель на случай 503 от провайдера основной.
+        self._models = models_chain(model, fallback)
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -175,8 +179,8 @@ class OpenAIBatchProvider:
 
         raw: str | None = None
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
+            response = await create_with_fallback(
+                self._client, self._models,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
@@ -222,8 +226,8 @@ class OpenAIBatchProvider:
                     "role": "user",
                     "content": "Верни ответ строго в формате JSON. Никакого дополнительного текста.",
                 })
-                retry_response = await self._client.chat.completions.create(
-                    model=self._model,
+                retry_response = await create_with_fallback(
+                    self._client, self._models,
                     messages=retry_messages,
                     response_format=_response_format,
                     temperature=0.1,

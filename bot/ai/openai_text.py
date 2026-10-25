@@ -22,6 +22,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from bot.ai.fallback import create_with_fallback, models_chain
 from bot.ai.schemas import ConfidenceLevel, MealAnalysisResult
 
 logger = structlog.get_logger(__name__)
@@ -72,9 +73,12 @@ _JSON_SCHEMA = {
 
 
 class OpenAITextProvider:
-    def __init__(self, client: AsyncOpenAI, model: str) -> None:
+    def __init__(self, client: AsyncOpenAI, model: str,
+                 fallback: str | None = None) -> None:
         self._client = client
         self._model = model
+        # Запасная модель на случай 503 от провайдера основной.
+        self._models = models_chain(model, fallback)
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -87,8 +91,8 @@ class OpenAITextProvider:
         system_prompt = _load_system_prompt()
         log.debug("meal_text_prompt", prompt_chars=len(system_prompt), user_input=text)
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
+            response = await create_with_fallback(
+                self._client, self._models,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},

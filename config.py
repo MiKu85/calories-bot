@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     text_model_name: str = "gpt-4o-mini"
     vision_model_provider: str = "openai"
     vision_model_name: str = "gpt-4o"
+    # Запасные модели: провайдер основной иногда отдаёт 503 и бот встаёт целиком.
+    text_model_fallback: str = ""
+    vision_model_fallback: str = ""
 
     # AI — STT
     stt_provider: str = "openai"
